@@ -6,7 +6,7 @@ running (it may be the owner's own session).
 
 Usage:
   powershell -ExecutionPolicy Bypass -File run-pair.ps1 [-Seconds 150] [-Port 47777] [-Probe]
-    [-DoorTest] [-ClientDoorTest] [-ItemTest] [-PauseTest] [-ClientDelay 12]
+    [-DoorTest] [-ClientDoorTest] [-ItemTest] [-PlaceTest] [-PauseTest] [-ClientDelay 12]
     [-KillClientAfter 60] [-RelaunchClientAfter 90] [-KillHostAfter 60]
     [-RelaunchHostAfter 90]
     [-Relay [-RelayProfile bad_wifi] [-RelaySeed N] [-ChaosPlan "60:profile:hell;90:stats"]]
@@ -36,6 +36,7 @@ param(
     [switch]$DoorTest,
     [switch]$ClientDoorTest,
     [switch]$ItemTest,
+    [switch]$PlaceTest,
     [switch]$PauseTest,
     [int]$ClientDelay = 12,
     [int]$KillClientAfter = -1,
@@ -95,6 +96,8 @@ if ($PauseTest) { $hostExtra = $hostExtra + @("--coop-pausetest") }
 # exercise the join -> host Request path (Poll sees a local change, sends it).
 $clientExtra = $extra
 if ($ClientDoorTest) { $clientExtra = $clientExtra + @("--coop-doortest") }
+# -PlaceTest moves one item on the guest only; the host must put it back.
+if ($PlaceTest) { $clientExtra = $clientExtra + @("--coop-placetest") }
 
 $started = Get-Date
 

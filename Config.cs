@@ -21,6 +21,7 @@ namespace GrannyCoop
         public bool Probe;
         public bool DoorTest;
         public bool ItemTest;
+        public bool PlaceTest;  // QA: move one item on the guest, wait for the host to undo it
         public bool ItemProbe;  // QA: name the InventoryController method that reverts a flag
         public bool Spectate;   // QA: force the spectator view without dying
         public bool CatchTest;  // QA: teleport onto Granny so she catches us
@@ -68,6 +69,7 @@ namespace GrannyCoop
                 else if (a == "coop-probe") cfg.Probe = true;
                 else if (a == "coop-doortest") cfg.DoorTest = true;
                 else if (a == "coop-itemtest") cfg.ItemTest = true;
+                else if (a == "coop-placetest") cfg.PlaceTest = true;
                 else if (a == "coop-itemprobe") cfg.ItemProbe = true;
                 else if (a == "coop-spectate") cfg.Spectate = true;
                 else if (a == "coop-catchtest") cfg.CatchTest = true;

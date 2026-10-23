@@ -38,7 +38,7 @@
 Запустите игру. В `MelonLoader/Logs/Latest.log` должна появиться строка:
 
 ```
-[Granny Co-op] COOP initialised v0.7.0 role=Off ...
+[Granny Co-op] COOP initialised v0.8.0 role=Off ...
 ```
 
 Если её нет — проверьте, что DLL лежит именно в `Mods`, а MelonLoader стоит версии 0.7.3.
@@ -126,7 +126,7 @@ A MelonLoader mod for **Granny** (DVloper, Steam app 962400), verified against v
 2. Launch the game once so MelonLoader creates `MelonLoader/` and `Mods/`, then close it.
 3. Copy `GrannyCoop.dll` into `<game dir>/Mods/`.
 4. Launch; `MelonLoader/Logs/Latest.log` should show
-   `[Granny Co-op] COOP initialised v0.7.0 ...`.
+   `[Granny Co-op] COOP initialised v0.8.0 ...`.
 
 ## Configure
 

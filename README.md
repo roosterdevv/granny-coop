@@ -16,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.7.0** |
+| Mod version | **0.8.0** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -27,7 +27,9 @@ Two players can host and join, see each other's avatars, see the same Granny (sh
 simulated on the host and pinned on the guest), and open/close the same doors
 (bidirectionally, host-authoritative). The shared inventory flags sync both ways, and the
 **picking player's** client is the one that puts the item in its hand and takes it out of
-the world, so the other player sees it in the picker's hands (v0.7.0). Avatars are drawn
+the world, so the other player sees it in the picker's hands (v0.7.0). **Item placement is
+host-authoritative** (v0.8.0): the host publishes where every item lies and each peer moves
+its own copy there, so two instances no longer show different layouts. Avatars are drawn
 at the peer's real feet with a 1.85 m stand and a 0.95 m crouch. A host that opens the
 pause/settings menu no longer stops the world (v0.7.0): the menu opens, but `Time.timeScale`
 is put back to 1 so Granny keeps walking for both players. The van and the day cycle are
@@ -63,6 +65,16 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   run the guest picked up the hammer, the host adopted the write
   (`apply Hammare=have owner=guest`) and itself stayed empty-handed (`HammerHand(active=n)`),
   and the guest logged `peer holds Hammare` (`§27`, `§29`).
+- **Item placement** (v0.8.0) — each instance rolls its own random layout when the scene
+  starts, and the seed cannot be replayed from outside the game, so the **host's layout is
+  replicated instead**. The host sends a placement table (item hash, position, rotation,
+  active state) in 3 chunks at prepare, on every request and every 15 s; a guest asks on
+  join and re-asks until the first table arrives. A local drop sends that one item 0.4 s
+  later. Held items are skipped (the have-flag path owns them); the next table after a drop
+  puts them back. Both status lines carry a live placement fingerprint (`ipos=n:XXXXXXXX`)
+  built from item hashes, positions quantised to cm and active state. In the 2026-10-23 run
+  both ends agreed on `ipos` at every sample, and with the QA nudge (`-PlaceTest`) the guest
+  moved `tb1` by 2.5 m and the host's reply put it back 12 ms later (`§30`).
 - **Avatars** — the peer's state carries its **feet** position, not the controller pivot,
   and a crouch flag. The capsule is built from the feet up: 1.85 m standing, 0.95 m
   crouched, lerped between the two over ~0.2 s. Before v0.7.0 it was a 1.5 m capsule
@@ -174,7 +186,7 @@ magic "GCP1" (4) | type (1) | seq (4) | payload
 | 6 | Bye | both, on leave | — |
 | 7 | Granny | host → guest, 20 Hz | flags, position, yaw |
 | 8 | Door | both | kind (State / Snapshot / Request / SnapshotRequest), door hash, state |
-| 9 | Item | both | kind (State / Snapshot / SnapshotRequest), item hash, have flag, owner (0 none, 1 host, 2 guest) |
+| 9 | Item | both | kind (State / Snapshot / SnapshotRequest / Placement / PlacementRequest), item hash, have flag, owner (0 none, 1 host, 2 guest), world position (3 floats), rotation (4 floats), active byte |
 | 10 | Catch | both, on edge | alive (0 dead / 1 back), cause (informational) |
 
 Host is authoritative for the scene, Granny, doors and items. The receiver has **no reordering
@@ -221,7 +233,8 @@ Granny.exe --coop-join=192.168.1.10 --coop-name=Guest
 same LAN or a virtual LAN (ZeroTier/Tailscale/Radmin) that is the whole setup.
 
 Test-only flags used by the harness: `--coop-autoplay` (drive the menu), `--coop-testmove`
-(walk a fixed path), `--coop-doortest`, `--coop-itemtest`, `--coop-probe`,
+(walk a fixed path), `--coop-doortest`, `--coop-itemtest`, `--coop-placetest` (move one
+item on the guest and watch the host put it back), `--coop-probe`,
 `--coop-spectate` (force the spectator view without dying), `--coop-catchtest` (walk
 onto Granny so she catches the player) and `--coop-pausetest` (reproduce the settings
 menu's `Time.timeScale = 0` at 60 s and 65 s). Do not use them for real play.
@@ -287,9 +300,12 @@ untouched install starts instead (`docs/NOTES.md §25`).
 | two clients, `--coop-itemtest` on the guest | 2026-10-23 | guest → host pickup (v0.6.0) | guest wrote `Hammare=have`, host applied it within 40 ms and mirrored the hand; host→guest direction re-confirmed in the same run |
 | two clients, `-ItemTest`, 150 s | 2026-10-23 | item ownership + avatar height (v0.7.0) | guest picked up `Hammare`; its own hand stayed empty (`HammerHand(active=n)`) while it drew `peer holds Hammare` in the host's hand; host applied `owner=guest`; avatars created at the feet, 1.85 m |
 | two clients, `-PauseTest`, 150 s | 2026-10-23 | pause policy (v0.7.0) | two simulated menu pauses; each restored on the next frame (`Time.timeScale 0 -> 1`, `timeScale=1.00 audioPaused=False`), Granny walked 3 m through the window and the guest's `gRemote` matched |
+| two clients, `-PlaceTest`, 100 s | 2026-10-23 | host placement table + forced divergence (v0.8.0) | host sent 50 items in 3 chunks; both ends `ipos=50:D6465449`; guest moved `tb1` from (5.64, -2.76, 1.61) to (8.14, -2.76, 4.11), the host's table put it back 12 ms later, and `ipos` matched again |
 
 No run has covered: a real network, three players, a full playthrough, a human pickup, or
-re-entry after a catch.
+re-entry after a catch. Placement has not been run across two PCs with genuinely different
+saves: the paired installs on one PC roll the same layout, so the correction path was
+exercised with a forced divergence (`-PlaceTest`) instead.
 
 ## Notes and prior art
 
