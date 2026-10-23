@@ -16,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.6.0** |
+| Mod version | **0.7.0** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -26,8 +26,12 @@ nobody has played the game through in co-op yet.
 Two players can host and join, see each other's avatars, see the same Granny (she is
 simulated on the host and pinned on the guest), and open/close the same doors
 (bidirectionally, host-authoritative). The shared inventory flags sync both ways, and the
-receiving end puts the item in the hand and takes it out of the world itself, so a pickup
-shows on both ends. The van and the day cycle are **not** synced, and a catch is not
+**picking player's** client is the one that puts the item in its hand and takes it out of
+the world, so the other player sees it in the picker's hands (v0.7.0). Avatars are drawn
+at the peer's real feet with a 1.85 m stand and a 0.95 m crouch. A host that opens the
+pause/settings menu no longer stops the world (v0.7.0): the menu opens, but `Time.timeScale`
+is put back to 1 so Granny keeps walking for both players. The van and the day cycle are
+**not** synced, and a catch is not
 replayed on the other client: each side plays its own death, and the wire carries only the
 dead/alive edge, which switches the caught player to a spectator view of the other one.
 
@@ -51,11 +55,28 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   as the only flipper (`§23`).
 - **Items** — the shared item table is snapshotted at prepare, changes are synced as
   `Item/State` **in both directions** (a pickup on either end) and repaired by a 10 s
-  snapshot. The have flag is written directly and stays put, and the receiving end
-  mirrors the objects itself: it activates the hand slot, clones the world model into it
-  and hides the world object (reversed on a drop). In the 2026-10-23 run the guest picked
-  up the hammer and the host adopted the write (`apply Hammare=have was=none now=have`)
-  (`§27`).
+  snapshot. Each `State` carries an owner byte (0 none, 1 host, 2 guest), so both ends
+  agree on *who* holds the item. The picker's own client writes the have flag, activates
+  its hand slot, clones the world model into it and hides the world object; the other
+  client only hides its copy of the world object and puts a visual clone into the peer's
+  avatar hand, so the item is never in two hands. Reversed on a drop. In the 2026-10-23
+  run the guest picked up the hammer, the host adopted the write
+  (`apply Hammare=have owner=guest`) and itself stayed empty-handed (`HammerHand(active=n)`),
+  and the guest logged `peer holds Hammare` (`§27`, `§29`).
+- **Avatars** — the peer's state carries its **feet** position, not the controller pivot,
+  and a crouch flag. The capsule is built from the feet up: 1.85 m standing, 0.95 m
+  crouched, lerped between the two over ~0.2 s. Before v0.7.0 it was a 1.5 m capsule
+  centred on a position that is already the feet, so half of it was under the floor and
+  the visible stub read as a short character (`§29`).
+- **Pause** — while connected in the gameplay scene the mod keeps `Time.timeScale` at 1
+  (and audio unpaused) whenever the game sets it to 0. Opening the host's pause/settings
+  menu therefore opens the menu without freezing Granny for the guest; the menu's own
+  input blocking still applies. The death sequence is the one timeScale-0 state left
+  alone. Verified with `--coop-pausetest`, which reproduces the menu's assignment (a mod
+  cannot click the game's own settings button): two pauses, restored on the next frame,
+  `timeScale=1.00 audioPaused=False`, and Granny travelled 3 m between the pause and the
+  15 s check while the guest's `gRemote` matched the host's `granny=` throughout
+  (`§29`).
 - **Scene follow** — the host is authoritative for the scene; a guest loads whatever the
   host announces, with a guard that holds the request while the guest is still in
   `SplashScreen`, so the game's boot is not skipped (`§24`).
@@ -86,9 +107,17 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   only thing that reverts it is an explicit `CheckInventory()`, which re-derives every
   flag from the world objects — and the only caller was our own QA refresh. The mod no
   longer calls it (`§27`).
-- **The item visual is a replica.** On receive, the mod clones the world model into the
-  hand slot; it may look different from the game's own hand prefab, and the pickup
-  animation/sound is not played.
+- **The peer's item visual is a replica.** The picker's own client drives the game's real
+  hand slot, but the other client draws a visual clone of the world model in the peer's
+  avatar hand: it may differ from the game's hand prefab, and the pickup animation/sound
+  is not played for it. Colliders and game scripts on the clone are switched off, so it
+  can neither be picked up nor move by itself.
+- **The pause fix is tested against a simulated pause, not the real menu.** A mod cannot
+  reliably press the game's own settings button, so `--coop-pausetest` performs the same
+  two assignments the menu performs when it opens (`Time.timeScale = 0`,
+  `AudioListener.pause = true`). What was verified is that the mod puts both back on the
+  next frame and that Granny keeps moving and staying in sync. Whether the real menu
+  pauses anything else (cursor lock, input focus) is untouched by design and unverified.
 - **A human pickup is untested.** The two-way path was verified by writing the flag from
   the QA cycle, not by looking at an item and pressing a key; mapping the pickup
   components (`PickUp`, `PickUpNew`, the bed/coffin buttons) to inventory flags is not
@@ -127,7 +156,7 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   transform path, because the enumeration order differs between installations.
 - Inventory is a fixed set of flags (`InventoryController`), one per item type.
 
-## Protocol v1
+## Protocol v2
 
 UDP, little-endian, one datagram per message, no fragmentation at this layer.
 
@@ -139,13 +168,13 @@ magic "GCP1" (4) | type (1) | seq (4) | payload
 |---|---|---|---|
 | 1 | Hello | guest → host, repeated until answered | protocol version, name |
 | 2 | Welcome | host → guest | protocol version, host id, host name |
-| 3 | Reject | host → guest | reason (`protocol v1 required`, `session full`) |
-| 4 | State | both, 20 Hz | sender id, flags, position, yaw, pitch |
+| 3 | Reject | host → guest | reason (`protocol v2 required`, `session full`) |
+| 4 | State | both, 20 Hz | sender id, flags (`1` valid, `2` in bed, `4` crouched), feet position, yaw, pitch |
 | 5 | Scene | host → guest | scene name |
 | 6 | Bye | both, on leave | — |
 | 7 | Granny | host → guest, 20 Hz | flags, position, yaw |
 | 8 | Door | both | kind (State / Snapshot / Request / SnapshotRequest), door hash, state |
-| 9 | Item | both | kind (State / Snapshot / SnapshotRequest), item hash, have flag |
+| 9 | Item | both | kind (State / Snapshot / SnapshotRequest), item hash, have flag, owner (0 none, 1 host, 2 guest) |
 | 10 | Catch | both, on edge | alive (0 dead / 1 back), cause (informational) |
 
 Host is authoritative for the scene, Granny, doors and items. The receiver has **no reordering
@@ -193,8 +222,12 @@ same LAN or a virtual LAN (ZeroTier/Tailscale/Radmin) that is the whole setup.
 
 Test-only flags used by the harness: `--coop-autoplay` (drive the menu), `--coop-testmove`
 (walk a fixed path), `--coop-doortest`, `--coop-itemtest`, `--coop-probe`,
-`--coop-spectate` (force the spectator view without dying) and `--coop-catchtest` (walk
-onto Granny so she catches the player). Do not use them for real play.
+`--coop-spectate` (force the spectator view without dying), `--coop-catchtest` (walk
+onto Granny so she catches the player) and `--coop-pausetest` (reproduce the settings
+menu's `Time.timeScale = 0` at 60 s and 65 s). Do not use them for real play.
+
+Upgrading from 0.6.0: the protocol is now **v2**, so both players must run the same mod
+version. A v1 peer is rejected with `protocol v2 required`.
 
 ## QA
 
@@ -216,7 +249,7 @@ process it spawned (and only those), and stops them at the end. `-Relay` needs t
 relay from [`coop-anything`](https://github.com/cranebeaker/coop-anything) via
 `-ChaosRoot`; without it the pair talks directly.
 
-`tools/fake-host.py` is a scripted protocol-v1 host for join-side tests with **one** game
+`tools/fake-host.py` is a scripted protocol-v2 host for join-side tests with **one** game
 instance: it answers `Hello` with `Welcome`, sends `Scene` on a schedule and keeps the peer
 timeout alive. It is how scene follow was checked without a second client (~2.7 GB instead
 of ~5.4 GB). `--state-circle RADIUS` adds a fake remote player walking a circle, which is
@@ -252,6 +285,8 @@ untouched install starts instead (`docs/NOTES.md §25`).
 | `fake-host.py` + `--coop-catchtest` | 2026-10-23 | scene change while dead (v0.5.3) | forced `Menu` request during the death → spectate stopped before the load, host received `Catch alive` |
 | two clients, `--coop-itemtest` on the guest | 2026-10-23 | item write holds and mirrors (v0.5.4) | flag survived a 60 s hold untouched; flag alone moved nothing; the hand replica appears with the flag; host adopted the guest's write (`apply Hammare=have was=none now=have`) |
 | two clients, `--coop-itemtest` on the guest | 2026-10-23 | guest → host pickup (v0.6.0) | guest wrote `Hammare=have`, host applied it within 40 ms and mirrored the hand; host→guest direction re-confirmed in the same run |
+| two clients, `-ItemTest`, 150 s | 2026-10-23 | item ownership + avatar height (v0.7.0) | guest picked up `Hammare`; its own hand stayed empty (`HammerHand(active=n)`) while it drew `peer holds Hammare` in the host's hand; host applied `owner=guest`; avatars created at the feet, 1.85 m |
+| two clients, `-PauseTest`, 150 s | 2026-10-23 | pause policy (v0.7.0) | two simulated menu pauses; each restored on the next frame (`Time.timeScale 0 -> 1`, `timeScale=1.00 audioPaused=False`), Granny walked 3 m through the window and the guest's `gRemote` matched |
 
 No run has covered: a real network, three players, a full playthrough, a human pickup, or
 re-entry after a catch.

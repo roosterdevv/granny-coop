@@ -98,6 +98,10 @@ namespace GrannyCoop
         public bool LocalCaught => _localCaught;
         public bool RemoteCaught => _remoteCaught;
         public bool RemoteKnown => _remoteKnown;
+
+        /// <summary>True while the game's game-over sequence runs; the pause
+        /// override leaves timeScale alone then (v0.7.0).</summary>
+        public bool EndSequence => _endSeq;
         public bool Spectating { get; private set; }
         public bool Bound => _caught != null;
 

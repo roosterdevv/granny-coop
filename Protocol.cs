@@ -27,12 +27,16 @@ namespace GrannyCoop
     internal static class Protocol
     {
         public const uint Magic = 0x31435047; // "GCP1" little-endian
-        public const byte Version = 1;
+        // v2: items carry an owner byte (0 none, 1 host, 2 guest), so the end
+        // that received a pickup shows it on the other player's avatar instead
+        // of its own hand; player state carries a crouch flag.
+        public const byte Version = 2;
         public const int MaxDatagram = 1024;
 
         // State flags
         public const byte FlagPlayerValid = 1 << 0;
         public const byte FlagPlayerInBed = 1 << 1;
+        public const byte FlagPlayerCrouch = 1 << 2;
 
         // Granny flags
         public const byte FlagGrannyValid = 1 << 0;

@@ -24,6 +24,7 @@ namespace GrannyCoop
         public bool ItemProbe;  // QA: name the InventoryController method that reverts a flag
         public bool Spectate;   // QA: force the spectator view without dying
         public bool CatchTest;  // QA: teleport onto Granny so she catches us
+        public bool PauseTest;  // QA: simulate the settings menu's Time.timeScale = 0
 
         public static CoopConfig Load()
         {
@@ -70,6 +71,7 @@ namespace GrannyCoop
                 else if (a == "coop-itemprobe") cfg.ItemProbe = true;
                 else if (a == "coop-spectate") cfg.Spectate = true;
                 else if (a == "coop-catchtest") cfg.CatchTest = true;
+                else if (a == "coop-pausetest") cfg.PauseTest = true;
                 else if (a.StartsWith("coop-join=", StringComparison.OrdinalIgnoreCase))
                 {
                     cfg.Role = CoopRole.Join;

@@ -141,7 +141,7 @@ def main():
                 if peer is None:
                     peer = addr
                     log("hello from %s:%d '%s' v%d" % (addr[0], addr[1], name, version))
-                    sock.sendto(wire.msg(WELCOME, bytes([1, 1]) + pack_str(args.name)), addr)
+                    sock.sendto(wire.msg(WELCOME, bytes([2, 1]) + pack_str(args.name)), addr)
                     log("welcome sent")
                     welcomed_at = time.monotonic()
                 elif hellos % 40 == 1:

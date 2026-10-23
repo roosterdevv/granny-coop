@@ -29,6 +29,14 @@ namespace GrannyCoop
         private const float SnapshotRequestInterval = 5f;
         private const float SettleDelay = 1.5f;
 
+        /// <summary>Owner byte on the wire (protocol v2): which end's hands the
+        /// item is in. 0 is "nobody / not attributable" — the item was already
+        /// held when the session started — and keeps the v0.6.0 behaviour of
+        /// mirroring it into the receiving end's own hand.</summary>
+        public const byte OwnerNone = 0;
+        public const byte OwnerHost = 1;
+        public const byte OwnerGuest = 2;
+
         private sealed class Entry
         {
             public string Name;
@@ -37,12 +45,18 @@ namespace GrannyCoop
             public PropertyInfo Obj;
             public PropertyInfo Tr;
             public bool Last;
+            /// <summary>Which end holds the item, as last agreed on the wire.</summary>
+            public byte Owner;
             /// <summary>Copy of the world model placed in the hand while this
             /// end has the item. Only the end that applies a state creates one
             /// (see ApplyVisual); the end that really picked the item up has the
             /// game's own model there.</summary>
             public GameObject Spawned;
         }
+
+        /// <summary>The remote player's avatar, so an item a peer picked up is
+        /// shown in the peer's hands instead of in ours (v0.7.0).</summary>
+        public RemoteAvatar Avatar { get; set; }
 
         private readonly List<Entry> _items = new List<Entry>();
         private MonoBehaviour _inv;
@@ -76,6 +90,7 @@ namespace GrannyCoop
         public void Reset()
         {
             _probe.Detach();
+            if (Avatar != null) Avatar.ClearHeldItem();
             foreach (var e in _items)
             {
                 try { if (e.Spawned != null) UnityEngine.Object.Destroy(e.Spawned); }
@@ -125,7 +140,7 @@ namespace GrannyCoop
                 // pickup is undone by the next table. Until the first table
                 // arrives the guest must stay quiet — its freshly scanned flags
                 // are local defaults, not news.
-                if (!(role == CoopRole.Join && !_gotSnapshot)) Poll(send);
+                if (!(role == CoopRole.Join && !_gotSnapshot)) Poll(role, send);
 
                 if (role == CoopRole.Host)
                 {
@@ -287,24 +302,43 @@ namespace GrannyCoop
             }
         }
 
-        private void Poll(Func<byte[], bool> send)
+        /// <summary>Which side a role is, as the wire owner byte spells it.</summary>
+        private static byte SideOf(CoopRole role)
+        {
+            if (role == CoopRole.Host) return OwnerHost;
+            if (role == CoopRole.Join) return OwnerGuest;
+            return OwnerNone;
+        }
+
+        private static string OwnerName(byte owner)
+        {
+            if (owner == OwnerHost) return "host";
+            if (owner == OwnerGuest) return "guest";
+            return "-";
+        }
+
+        private void Poll(CoopRole role, Func<byte[], bool> send)
         {
             foreach (var e in _items)
             {
                 bool v = Read(e);
                 if (v == e.Last) continue;
                 e.Last = v;
-                if (send(BuildStateBody(e.Hash, v))) Sent++;
+                // A local pickup is ours, a local drop belongs to nobody; the
+                // peer applies whichever the message says.
+                e.Owner = v ? SideOf(role) : OwnerNone;
+                if (send(BuildStateBody(e.Hash, v, e.Owner))) Sent++;
                 LoggerUtil.Log("COOP items: local " + e.Name + " -> " +
-                               (v ? "have" : "none"));
+                               (v ? "have" : "none") + " owner=" + OwnerName(e.Owner));
             }
         }
 
-        private void Apply(Entry e, bool value)
+        private void Apply(Entry e, bool value, byte owner, CoopRole role)
         {
             bool before = Read(e);
             bool ok = Write(e, value);
             e.Last = value;
+            e.Owner = value ? owner : OwnerNone;
             Applied++;
 
             // The flag alone is durable (QA: it held for 60 s untouched) but it
@@ -313,11 +347,56 @@ namespace GrannyCoop
             // in the world and never shows in the hand. CheckInventory stays out
             // of this path: it re-derives every flag from the world objects and
             // is the one thing that undoes the write (Notes §27).
-            ApplyVisual(e, value);
+            //
+            // v0.7.0: an item the peer picked up goes into the peer's hands
+            // (the avatar), not ours. Owner 0 means "unknown" (held before the
+            // session started) and keeps the old local-hand mirror.
+            var world = WorldOf(e);
+            bool mine = !value || owner == OwnerNone || owner == SideOf(role);
+            if (mine)
+            {
+                // Covers both "we own it now" and "nobody owns it any more":
+                // either way the peer's avatar must let go of this item.
+                if (Avatar != null && world != null) Avatar.ClearHeldItem(world.gameObject);
+                ApplyVisual(e, value);
+            }
+            else
+            {
+                HideLocal(e);
+                // Clone before hiding the world object: an inactive source
+                // produces an inactive clone that would never render.
+                if (Avatar != null) Avatar.SetHeldItem(world != null ? world.gameObject : null, e.Name);
+                try { if (world != null) world.gameObject.SetActive(false); }
+                catch (Exception ex) { LoggerUtil.Log("COOP items: world FAILED on " + e.Name + ": " + ex.GetType().Name + ": " + ex.Message); }
+            }
+
             LoggerUtil.Log("COOP items: apply " + e.Name + "=" + (value ? "have" : "none") +
+                           " owner=" + OwnerName(e.Owner) +
                            " was=" + (before ? "have" : "none") +
                            " now=" + (Read(e) ? "have" : "none") +
                            (ok ? "" : " (not writable)") + " " + Describe(e));
+        }
+
+        private Transform WorldOf(Entry e)
+        {
+            try { return e.Tr != null ? e.Tr.GetValue(_inv) as Transform : null; }
+            catch { return null; }
+        }
+
+        /// <summary>Clear the local hand slot this end filled for someone
+        /// else's pickup. Only touches objects this end created (Spawned) plus
+        /// the (empty on this end) hand slot itself.</summary>
+        private void HideLocal(Entry e)
+        {
+            try { if (e.Spawned != null) UnityEngine.Object.Destroy(e.Spawned); }
+            catch (Exception) { }
+            e.Spawned = null;
+            try
+            {
+                var hand = e.Obj != null ? e.Obj.GetValue(_inv) as GameObject : null;
+                if (hand != null) hand.SetActive(false);
+            }
+            catch (Exception) { }
         }
 
         /// <summary>Run InventoryController.CheckInventory so the game itself
@@ -516,7 +595,7 @@ namespace GrannyCoop
 
         // ---- wire -------------------------------------------------------------
 
-        private static byte[] BuildStateBody(uint hash, bool value)
+        private static byte[] BuildStateBody(uint hash, bool value, byte owner)
         {
             using (var ms = new System.IO.MemoryStream(8))
             using (var w = new System.IO.BinaryWriter(ms))
@@ -524,6 +603,7 @@ namespace GrannyCoop
                 w.Write(KindState);
                 w.Write(hash);
                 w.Write((byte)(value ? 1 : 0));
+                w.Write(value ? owner : OwnerNone);
                 return ms.ToArray();
             }
         }
@@ -543,6 +623,7 @@ namespace GrannyCoop
                     bool v = e.Have != null && e.Have.CanRead ? Read(e) : e.Last;
                     w.Write(e.Hash);
                     w.Write((byte)(v ? 1 : 0));
+                    w.Write(v ? e.Owner : OwnerNone);
                 }
                 return ms.ToArray();
             }
@@ -572,9 +653,10 @@ namespace GrannyCoop
                     if (_inv == null || !_prepared) break;
                     uint hash = r.U32();
                     bool value = r.Byte() != 0;
+                    byte owner = r.Byte();
                     var e = Find(hash);
                     if (e == null) break;
-                    Apply(e, value);
+                    Apply(e, value, owner, role);
                     break;
                 }
 
@@ -587,9 +669,18 @@ namespace GrannyCoop
                     {
                         uint hash = r.U32();
                         bool value = r.Byte() != 0;
+                        byte owner = r.Byte();
                         var e = Find(hash);
                         if (e == null) continue;
-                        if (Read(e) != value) { Apply(e, value); applied++; }
+                        // Ownership can differ even when the flag already
+                        // matches (the item was in our hand before we joined),
+                        // and that is what decides whether we show it on the
+                        // peer's avatar, so compare it too.
+                        if (Read(e) != value || e.Owner != (value ? owner : OwnerNone))
+                        {
+                            Apply(e, value, owner, role);
+                            applied++;
+                        }
                         else e.Last = value;
                     }
                     _gotSnapshot = true;

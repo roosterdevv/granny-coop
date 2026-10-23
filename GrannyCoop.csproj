@@ -51,6 +51,10 @@
       <HintPath>$(GrannyTest)\MelonLoader\Il2CppAssemblies\UnityEngine.AnimationModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(GrannyTest)\MelonLoader\Il2CppAssemblies\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(GrannyTest)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>

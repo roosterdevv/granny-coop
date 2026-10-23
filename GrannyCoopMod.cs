@@ -3,7 +3,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.6.0", "coop-anything")]
+[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.7.0", "coop-anything")]
 [assembly: MelonGame("DVloper", "Granny")]
 
 namespace GrannyCoop
@@ -39,7 +39,23 @@ namespace GrannyCoop
         private int _grannyRecv;
         private Transform _camT;
         private CharacterController _cc;
+        private UnityStandardAssets.Characters.FirstPerson.FirstPersonController_Egen _fpc;
         private bool _sawPlayerActive;
+
+        // v0.7.0: the peer needs the feet, not the controller transform, and a
+        // crouch bit, so its avatar can stand as tall as a person and shrink
+        // when the player does. The game's own crouch bool is on the
+        // first-person controller; the controller height is the fallback.
+        private float _standHeight;
+        private bool _crouchKnown;
+        private bool _crouch;
+
+        // v0.7.0 pause policy: while connected, the pause/settings menu must not
+        // stop the world (the host's Granny is the copy both players see). The
+        // game sets Time.timeScale = 0; put it back. Logged on each edge.
+        private bool _pauseForced;
+        private float _pauseLogAt;
+        private int _pauseForces;
 
         // QA only: the Player root goes inactive for stretches during a run
         // (observed in the v0.4.1 sanity run), and both sync ticks stop while
@@ -57,6 +73,12 @@ namespace GrannyCoop
         // without a human driving her.
         private float _catchTestAccum;
 
+        // QA-only: reproduce the settings menu's pause without a human, see
+        // PauseTestTick.
+        private float _pauseTestStart;
+        private int _pauseTestPhase;
+        private bool _pauseTestRepeated;
+
         // Auto play (test harness only)
         private int _menuFrames = -1;
         private int _afterClick;
@@ -69,7 +91,7 @@ namespace GrannyCoop
             _doors.DoorTest = _cfg.DoorTest;
             _items.ItemTest = _cfg.ItemTest;
             _items.ItemProbe = _cfg.ItemProbe;
-            LoggerUtil.Log($"COOP initialised v0.6.0 role={_cfg.Role} name='{_cfg.PlayerName}' " +
+            LoggerUtil.Log($"COOP initialised v0.7.0 role={_cfg.Role} name='{_cfg.PlayerName}' " +
                            $"addr={_cfg.Address}:{_cfg.Port} autoplay={_cfg.AutoPlay} probe={_cfg.Probe} " +
                            $"doortest={_cfg.DoorTest} itemtest={_cfg.ItemTest} iprobe={_cfg.ItemProbe} " +
                            $"spectate={_cfg.Spectate} catchtest={_cfg.CatchTest}");
@@ -84,6 +106,7 @@ namespace GrannyCoop
             _net = new CoopNet(_cfg.Role, _cfg.PlayerName, _cfg.Address, _cfg.Port);
             _net.AppMessage += OnAppMessage;
             _net.ConnectionChanged += OnConnectionChanged;
+            _items.Avatar = _remote;
         }
 
         public override void OnUpdate()
@@ -95,6 +118,7 @@ namespace GrannyCoop
             if (_net != null)
             {
                 _net.Tick();
+                KeepWorldRunning();
                 SendLocalState();
                 SyncGranny(UnityEngine.Time.unscaledDeltaTime);
                 _catch.Tick(UnityEngine.Time.unscaledDeltaTime, FindRoot("Player"), _remote,
@@ -103,6 +127,7 @@ namespace GrannyCoop
             }
 
             if (_net != null && _cfg.CatchTest) CatchTestTick(UnityEngine.Time.unscaledDeltaTime);
+            if (_net != null && _cfg.PauseTest) PauseTestTick();
 
             if (_net != null && _scene == "Scene")
             {
@@ -141,6 +166,10 @@ namespace GrannyCoop
             _scene = sceneName;
             _camT = null;
             _cc = null;
+            _fpc = null;
+            _standHeight = 0f;
+            _crouch = false;
+            _crouchKnown = false;
             _testMoveClock = 0f;
             _testMoveLogged = false;
             _sawPlayerActive = false;
@@ -184,7 +213,18 @@ namespace GrannyCoop
                 // body rather than a possibly stationary parent.
                 var body = BodyOf(player);
                 var t = body != null ? body.transform : player.transform;
-                var p = t.position;
+                Vector3 p = t.position;
+                if (body != null)
+                {
+                    // v0.7.0: send the feet, not the controller's pivot. The
+                    // remote avatar hangs a person-height capsule above this
+                    // point; sending the pivot buried it to the waist.
+                    p = FeetOf(body);
+                    if (_standHeight <= 0.01f || body.height > _standHeight)
+                        _standHeight = body.height;
+                    if (IsCrouching(player, body)) flags |= Protocol.FlagPlayerCrouch;
+                }
+
                 x = p.x; y = p.y; z = p.z;
                 yaw = t.eulerAngles.y;
 
@@ -198,7 +238,8 @@ namespace GrannyCoop
                 if (!_sawPlayerActive)
                 {
                     _sawPlayerActive = true;
-                    LoggerUtil.Log($"COOP local player active at {p} yaw={yaw:F1}");
+                    LoggerUtil.Log($"COOP local player active at feet {p} yaw={yaw:F1} " +
+                                   $"cc.height={(body != null ? body.height : 0f):0.00}");
                 }
             }
 
@@ -453,6 +494,90 @@ namespace GrannyCoop
             return _cc;
         }
 
+        /// <summary>Bottom of the controller's capsule in world space.</summary>
+        private static Vector3 FeetOf(CharacterController cc)
+        {
+            var t = cc.transform;
+            var centre = t.TransformPoint(cc.center);
+            return centre - Vector3.up * (cc.height * 0.5f);
+        }
+
+        /// <summary>
+        /// True while the local player crouches: the game's own bool when it can
+        /// be read, otherwise a shorter controller capsule. Logs each edge.
+        /// </summary>
+        private bool IsCrouching(GameObject player, CharacterController body)
+        {
+            bool crouch = _standHeight > 0.01f && body.height < _standHeight - 0.2f;
+
+            if (_fpc == null && player != null)
+            {
+                try
+                {
+                    _fpc = player.GetComponentInChildren<
+                        UnityStandardAssets.Characters.FirstPerson.FirstPersonController_Egen>();
+                }
+                catch (Exception) { }
+            }
+
+            if (_fpc != null)
+            {
+                try { if (_fpc.playerCrouch) crouch = true; }
+                catch (Exception) { _fpc = null; }
+            }
+
+            if (crouch != _crouch || !_crouchKnown)
+            {
+                _crouch = crouch;
+                _crouchKnown = true;
+                LoggerUtil.Log($"COOP crouch={crouch} (cc.height {body.height:0.00}, " +
+                               $"stand {_standHeight:0.00}, fpc={(_fpc != null ? "yes" : "no")})");
+            }
+            return crouch;
+        }
+
+        /// <summary>
+        /// v0.7.0 pause policy: opening the pause/settings menu must not stop the
+        /// world. The host is the only one simulating Granny, so a paused host
+        /// used to freeze her for the guest while the guest could still walk.
+        /// While connected in the gameplay scene we put Time.timeScale back to 1
+        /// and un-pause audio every frame the game asks for 0; the menu still
+        /// opens and the game still blocks its own input. The death sequence is
+        /// the one timeScale-0 state we leave alone.
+        /// </summary>
+        private void KeepWorldRunning()
+        {
+            if (_net == null || !_net.Connected || _scene != "Scene") return;
+            if (_catch.LocalCaught || _catch.EndSequence || _catch.Spectating) return;
+
+            if (UnityEngine.Time.timeScale > 0.0001f)
+            {
+                // Nothing is holding the world at zero any more: either the game
+                // never paused, or the restore above already took effect and no
+                // script asked for 0 again. Say so once per pause.
+                if (_pauseForced)
+                {
+                    _pauseForced = false;
+                    if (UnityEngine.AudioListener.pause) UnityEngine.AudioListener.pause = false;
+                    LoggerUtil.Log("COOP pause: timeScale back at 1, the pause did not hold");
+                }
+                return;
+            }
+
+            UnityEngine.Time.timeScale = 1f;
+            if (UnityEngine.AudioListener.pause) UnityEngine.AudioListener.pause = false;
+            _pauseForced = true;
+
+            float now = UnityEngine.Time.unscaledTime;
+            if (_pauseLogAt == 0f || now - _pauseLogAt > 5f)
+            {
+                _pauseLogAt = now;
+                _pauseForces++;
+                LoggerUtil.Log($"COOP pause: Time.timeScale 0 -> 1, world kept running " +
+                               $"(force #{_pauseForces}, death={_catch.LocalCaught})");
+            }
+        }
+
         // ---- QA-only movement driver ----------------------------------------
 
         private void TestMoveTick(float dt)
@@ -511,6 +636,52 @@ namespace GrannyCoop
             {
                 LoggerUtil.Log("COOP catchtest FAILED: " + e.GetType().Name + ": " + e.Message);
             }
+        }
+
+        // ---- QA-only: simulate the settings menu's pause ---------------------
+
+        // A mod cannot reliably click the game's own settings button (the
+        // canvas is il2cpp-owned and the button has no stable name), so the
+        // test reproduces what the menu does to the world instead: one
+        // Time.timeScale = 0 (plus AudioListener.pause) when it opens, another
+        // when a tab is switched, and nothing else. That is the state the host
+        // was in when the world stopped for the guest - see KeepWorldRunning,
+        // which has to put it back every frame.
+        private void PauseTestTick()
+        {
+            float now = UnityEngine.Time.realtimeSinceStartup;
+            if (_pauseTestStart <= 0f) _pauseTestStart = now;
+            float el = now - _pauseTestStart;
+
+            if (_pauseTestPhase == 0)
+            {
+                if (el < 60f || _net == null || !_net.Connected || _scene != "Scene") return;
+                _pauseTestPhase = 1;
+                SimulateMenuPause("first");
+            }
+            else if (_pauseTestPhase == 1)
+            {
+                if (el > 65f && !_pauseTestRepeated)
+                {
+                    _pauseTestRepeated = true;
+                    SimulateMenuPause("second tab");
+                }
+                else if (el > 75f)
+                {
+                    _pauseTestPhase = 2;
+                    LoggerUtil.Log($"COOP pausetest: 15 s after the pause timeScale={UnityEngine.Time.timeScale:0.00} " +
+                                   $"audioPaused={UnityEngine.AudioListener.pause} restores={_pauseForces} " +
+                                   $"granny={(_granny.HasGranny ? _granny.Position.ToString() : "none")}");
+                }
+            }
+        }
+
+        private void SimulateMenuPause(string which)
+        {
+            UnityEngine.Time.timeScale = 0f;
+            UnityEngine.AudioListener.pause = true;
+            LoggerUtil.Log($"COOP pausetest: {which} simulated menu pause (Time.timeScale=0, " +
+                           $"audioPaused=true, granny={(_granny.HasGranny ? _granny.Position.ToString() : "none")})");
         }
 
         // ---- test harness: drive the menu without a human -------------------
