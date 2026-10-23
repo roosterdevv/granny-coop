@@ -3,7 +3,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.5.1", "coop-anything")]
+[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.5.2", "coop-anything")]
 [assembly: MelonGame("DVloper", "Granny")]
 
 namespace GrannyCoop
@@ -68,7 +68,7 @@ namespace GrannyCoop
             _cfg = CoopConfig.Load();
             _doors.DoorTest = _cfg.DoorTest;
             _items.ItemTest = _cfg.ItemTest;
-            LoggerUtil.Log($"COOP initialised v0.5.1 role={_cfg.Role} name='{_cfg.PlayerName}' " +
+            LoggerUtil.Log($"COOP initialised v0.5.2 role={_cfg.Role} name='{_cfg.PlayerName}' " +
                            $"addr={_cfg.Address}:{_cfg.Port} autoplay={_cfg.AutoPlay} probe={_cfg.Probe} " +
                            $"doortest={_cfg.DoorTest} itemtest={_cfg.ItemTest} " +
                            $"spectate={_cfg.Spectate} catchtest={_cfg.CatchTest}");

@@ -16,6 +16,7 @@ namespace GrannyCoop
         private Transform _nose;
         private Renderer _rend;
         private Material _material;
+        private bool _remoteDead;
 
         public bool HasTarget { get; private set; }
         public Vector3 Target { get; private set; }
@@ -29,6 +30,22 @@ namespace GrannyCoop
         /// capsule and nose have to go while it is following. Set by CatchSync.</summary>
         public bool FirstPersonHidden { get; set; }
 
+        /// <summary>True while the peer reports itself dead. The body is with
+        /// Granny (or in the bed), so the standing avatar is hidden until the
+        /// peer announces it is alive again. Set by CatchSync.</summary>
+        public bool RemoteDead
+        {
+            get => _remoteDead;
+            set
+            {
+                if (value == _remoteDead) return;
+                _remoteDead = value;
+                LoggerUtil.Log(value
+                    ? "COOP avatar: hidden, the peer is dead"
+                    : "COOP avatar: shown again, the peer is alive");
+            }
+        }
+
         public void SetTarget(byte flags, float x, float y, float z, float yaw, float pitch)
         {
             HasTarget = (flags & Protocol.FlagPlayerValid) != 0;
@@ -41,7 +58,7 @@ namespace GrannyCoop
 
         public void Tick(float dt, bool remoteInGameplayScene)
         {
-            bool visible = HasTarget && remoteInGameplayScene && !FirstPersonHidden;
+            bool visible = HasTarget && remoteInGameplayScene && !FirstPersonHidden && !RemoteDead;
             if (!visible)
             {
                 if (_root != null) _root.SetActive(false);
@@ -122,6 +139,7 @@ namespace GrannyCoop
             _nose = null;
             _rend = null;
             _material = null;
+            _remoteDead = false;
             HasTarget = false;
         }
     }

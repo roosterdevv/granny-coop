@@ -13,7 +13,6 @@ usage:
 
 Times are seconds after Welcome is sent.
 """
-
 import argparse
 import math
 import select
@@ -23,7 +22,7 @@ import sys
 import time
 
 MAGIC = 0x31435047  # "GCP1"
-HELLO, WELCOME, REJECT, STATE, SCENE, BYE, GRANNY, DOOR, ITEM = range(1, 10)
+HELLO, WELCOME, REJECT, STATE, SCENE, BYE, GRANNY, DOOR, ITEM, CATCH = range(1, 11)
 
 
 def pack_str(text):
@@ -82,6 +81,12 @@ def main():
     ap.add_argument("--state-circle", type=float, default=0.0, metavar="RADIUS",
                     help="send a moving player State at 20 Hz round a circle of this "
                          "radius (QA: gives the spectator camera a known path)")
+    ap.add_argument("--catch-at", action="append", type=float, default=[],
+                    help="send a Catch edge saying the peer is dead, this many seconds "
+                         "after Welcome (repeatable)")
+    ap.add_argument("--revive-at", action="append", type=float, default=[],
+                    help="send a Catch edge saying the peer is alive again, this many "
+                         "seconds after Welcome (repeatable)")
     args = ap.parse_args()
 
     if not (len(args.scene) == len(args.scene_at) == len(args.scene_until)):
@@ -99,6 +104,8 @@ def main():
     next_circle_state = 0.0
     last_reset_log = 0.0
     hellos = 0
+    catch_sent = [False] * len(args.catch_at)
+    revive_sent = [False] * len(args.revive_at)
 
     while True:
         now = time.monotonic()
@@ -155,6 +162,19 @@ def main():
                 break
             if elapsed > end and last_scene == scene:
                 last_scene = None
+
+        # QA: the peer's dead/alive edges, so the guest's handling of a remote
+        # catch (avatar hidden while dead, back on the revive) can be checked.
+        for i, at in enumerate(args.catch_at):
+            if elapsed >= at and not catch_sent[i]:
+                catch_sent[i] = True
+                log("sending catch: peer dead")
+                sock.sendto(wire.msg(CATCH, bytes([0, 1])), peer)
+        for i, at in enumerate(args.revive_at):
+            if elapsed >= at and not revive_sent[i]:
+                revive_sent[i] = True
+                log("sending catch: peer alive")
+                sock.sendto(wire.msg(CATCH, bytes([1, 0])), peer)
 
         # QA spectator test: a valid player State walking a circle, at 20 Hz.
         # It also acts as keep-alive, so the idle heartbeat is skipped.

@@ -122,6 +122,10 @@ namespace GrannyCoop
 
             _player = player;
 
+            // The peer's body is with Granny while it is dead, so its standing
+            // avatar is hidden; a fresh Catch edge brings it back.
+            if (remote != null) remote.RemoteDead = _remoteKnown && _remoteCaught;
+
             if (_caught == null || _dead == null)
             {
                 _bindAccum += dt;
