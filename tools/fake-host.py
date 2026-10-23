@@ -146,6 +146,9 @@ def main():
                     welcomed_at = time.monotonic()
                 elif hellos % 40 == 1:
                     log("still getting hello (peer already set, %d so far)" % hellos)
+            elif kind == CATCH and len(data) >= 11:
+                alive, cause = data[9], data[10]
+                log("catch from guest: %s cause=%s" % ("alive" if alive else "dead", cause))
 
         if welcomed_at is None:
             continue

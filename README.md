@@ -16,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.5.2** |
+| Mod version | **0.5.3** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -62,9 +62,10 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   take a minute) and released when the game puts the player back in play — about 2 s after
   the `Player` root reactivates — or 45 s after the game's flags go clear, or at once on a
   scene change. Verified under the scripted host: 46.6 s of continuous tracking through the
-  game's camera swaps, and in a later run a 28.3 s view that ended 2.0 s after the revive
-  (`§26`). On the other side, a `Catch` edge hides the dead peer's avatar until the peer
-  announces it is alive again.
+  game's camera swaps, and in a later run a 28.3 s view that ended 2.0 s after the revive;
+  a forced scene change while dead tore the view down before the load and told the peer the
+  player is alive again (`§26`). On the other side, a `Catch` edge hides the dead peer's
+  avatar until the peer announces it is alive again.
 - **Late join** — a guest that loads a scene after the host gets state from one snapshot,
   not from an event log (`§16`).
 - **Failure paths** — kill the client and rejoin; kill the host; restart the host under a
@@ -85,9 +86,10 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   carries the dead/alive edge; the peer shows it in its status line (`rcatch=`) and hides
   the dead player's avatar until it comes back. Re-entry after a catch is untested (`§23`,
   `§26`).
-- **Death → Menu is untested.** The spectator view ends on a scene change or after the
-  hold expires; a death that runs on into the game-over screen has not been observed, so
-  whether the view ends exactly when the game goes back to the Menu is unknown (`§26`).
+- **The game's own death → game-over → Menu path is untested.** The view's exit on a scene
+  change was exercised by forcing one while dead (`§26`); a death that runs on into the
+  game's own game-over screen has not been observed, so whether the view ends exactly when
+  the game goes back to the Menu by itself is unknown (`§26`).
 - **Scene follow skips the difficulty selection.** A guest that follows the host into
   `Scene` loads the scene directly, not through Play → difficulty → Continue. The world
   builds and the player becomes active anyway, but whether the choice matters later is
@@ -232,6 +234,7 @@ untouched install starts instead (`docs/NOTES.md §25`).
 | `fake-host.py` + `--coop-catchtest` | 2026-10-23 | catch and the death view (v0.5.0) | catch → 46.6 s of continuous spectating through `Camera`/`PlayerEyes`/`PlayerCamInBed`; death overlay hidden |
 | `fake-host.py` + `--coop-catchtest` | 2026-10-23 | revive releases the view (v0.5.1) | 28.3 s spectating the grab and carry, stopped 2.0 s after `player active -> True` |
 | `fake-host.py --catch-at/--revive-at` | 2026-10-23 | remote catch on the survivor (v0.5.2) | `Catch` edge hid the peer's avatar (`avVisible=False`, `rcatch=granny`), shown again on the revive |
+| `fake-host.py` + `--coop-catchtest` | 2026-10-23 | scene change while dead (v0.5.3) | forced `Menu` request during the death → spectate stopped before the load, host received `Catch alive` |
 
 No run has covered: a real network, three players, a full playthrough, or re-entry after
 a catch.

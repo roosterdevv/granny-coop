@@ -191,8 +191,17 @@ namespace GrannyCoop
             if (_localCaught) send(0, _cause);
         }
 
-        public void Reset()
+        public void Reset(Action<byte, byte> send = null)
         {
+            // A scene change ends whatever death was running here: the new
+            // scene's player is alive. Tell the peer, or it would keep this
+            // player's avatar hidden until its own next scene change.
+            if (_known && _localCaught)
+            {
+                LoggerUtil.Log("COOP catch: scene change ends the death, local player is alive again");
+                send?.Invoke(1, _cause);
+            }
+
             StopSpectating(null);
             _caught = null;
             _dead = null;
