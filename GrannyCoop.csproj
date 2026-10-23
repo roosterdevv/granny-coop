@@ -7,8 +7,16 @@
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <NoWarn>$(NoWarn);CS0436;MSB3277</NoWarn>
+    <Version>0.8.0</Version>
     <GrannyTest>$(GRANNY_TEST)</GrannyTest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- tools/ holds the installer and the QA scripts, not mod code -->
+    <Compile Remove="tools\**" />
+    <EmbeddedResource Remove="tools\**" />
+    <None Remove="tools\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="MelonLoader">

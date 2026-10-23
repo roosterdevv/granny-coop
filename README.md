@@ -21,6 +21,37 @@ nobody has played the game through in co-op yet.
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
 
+## One-click install
+
+Download **`GrannyCoop-Setup-1.0.0.exe`** from the releases page and run it. The installer:
+
+- finds the game through Steam (or you pick the folder yourself);
+- checks that it is the tested build (metadata v31, sanity `0xFAB11BAF`);
+- installs MelonLoader 0.7.3 if it is missing (an older `version.dll` and `MelonLoader/`
+  are kept next to it as `*.bak-<date>`);
+- installs the .NET 6 runtime if the PC lacks it (one UAC prompt);
+- puts `GrannyCoop.dll` into `Mods/`;
+- writes the role into `UserData/MelonPreferences.cfg`: **Host** or **Join**, name,
+  host address and port.
+
+Then launch the game through Steam. The first launch takes 1–2 minutes while MelonLoader
+generates the Il2Cpp assemblies (needs internet, once).
+
+No game file is patched: `Granny.exe` and the data files stay as they are. Reinstalling or
+verifying the game in Steam removes the mod — run the installer again.
+
+Headless (scripts, QA):
+
+```
+GrannyCoop-Setup-1.0.0.exe --install "<game dir>" --role host --name Ann --port 47777
+```
+
+`--role` is `off`, `host` or `join`; for a guest add `--address <host ip>`. Exit codes:
+`0` done, `2` not a Granny folder, `3` untested build, `4` the game is running, `5` write
+failed, `6` .NET 6 did not install. Log: `%TEMP%\grannycoop-setup-*.log`.
+
+Manual install — [docs/INSTALL.md](docs/INSTALL.md).
+
 ## Where things stand
 
 Two players can host and join, see each other's avatars, see the same Granny (she is
@@ -321,3 +352,8 @@ this one) and none is a co-op mod for this game. *Granny: Escape Together* (Stea
 
 MIT — see [`LICENSE`](LICENSE). The chaos relay used by the QA harness is MIT too, from
 [`coop-anything`](https://github.com/cranebeaker/coop-anything).
+
+The installer ships third-party software under its own terms: **MelonLoader 0.7.3** is
+Apache-2.0 (Lava Gang), and its `LICENSE.md` and `NOTICE.txt` are installed with it;
+**.NET 6 Runtime** is Microsoft's official installer, whose licence is shown during its
+install. This mod itself stays MIT.

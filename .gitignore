@@ -9,3 +9,10 @@ tools/runs/
 # never commit the game's or the loader's assemblies
 *.dll
 *.pdb
+
+# installer payload: fetched and hash-checked by tools/build-setup.ps1
+# (MelonLoader 0.7.3 + .NET 6 runtime, ~48 MB together)
+tools/setup/payload/
+
+# local build of the installer
+dist/
