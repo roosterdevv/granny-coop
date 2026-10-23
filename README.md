@@ -1,5 +1,7 @@
 # Granny Co-op
 
+**English** · [Русский](README.ru.md)
+
 A co-op prototype for **Granny** (DVloper, 2018), the Steam PC build. Two players share
 one house: they see each other move, Granny is host-authoritative, and doors and the
 shared item flags cross the wire.
@@ -193,6 +195,5 @@ this one) and none is a co-op mod for this game. *Granny: Escape Together* (Stea
 
 ## License
 
-No license has been chosen for this repository yet. Until one is added, the source is
-public to read but not licensed for reuse. The chaos relay used by the QA harness is MIT,
-from `coop-anything`.
+MIT — see [`LICENSE`](LICENSE). The chaos relay used by the QA harness is MIT too, from
+[`coop-anything`](https://github.com/cranebeaker/coop-anything).
