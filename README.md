@@ -3,8 +3,9 @@
 **English** · [Русский](README.ru.md)
 
 A co-op prototype for **Granny** (DVloper, 2018), the Steam PC build. Two players share
-one house: they see each other move, Granny is host-authoritative, and doors and the
-shared item flags cross the wire.
+one house: they see each other move, Granny is host-authoritative, and doors, the shared
+item flags and the catch state cross the wire. When Granny catches one player, that
+player's client keeps watching the other one for the whole death sequence.
 
 This is a MelonLoader mod against the game's **IL2CPP** Unity 6 build. It is a prototype:
 the networking and the door/item sync are tested with a scripted two-instance harness, but
@@ -15,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.4.7** |
+| Mod version | **0.5.0** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -26,7 +27,9 @@ Two players can host and join, see each other's avatars, see the same Granny (sh
 simulated on the host and pinned on the guest), and open/close the same doors
 (bidirectionally, host-authoritative). The shared inventory flags sync both ways, but the
 game reverts the "have" flag on its own a few seconds after a write, so items are not
-dependable yet. The catch sequence, the van and the day cycle are **not** synced.
+dependable yet. The van and the day cycle are **not** synced, and a catch is not replayed
+on the other client: each side plays its own death, and the wire carries only the
+dead/alive edge, which switches the caught player to a spectator view of the other one.
 
 A guest follows the host between scenes (SplashScreen → Menu → gameplay), including a
 host that announces its scene while the guest is still booting.
@@ -52,6 +55,13 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
 - **Scene follow** — the host is authoritative for the scene; a guest loads whatever the
   host announces, with a guard that holds the request while the guest is still in
   `SplashScreen`, so the game's boot is not skipped (`§24`).
+- **Catch and the death view** — a catch, or the game's own end sequence, is latched as
+  dead and sent as a `Catch` edge. While dead the client's camera follows the other player
+  from eye height, and the game's full-screen fade and blood overlay are hidden so the view
+  is visible. The latch is held through the whole sequence (Granny carrying the body can
+  take a minute) and released 45 s after the game's flags go clear, or at once on a scene
+  change. Verified under the scripted host: 46.6 s of continuous tracking through the
+  game's camera swaps (`§26`).
 - **Late join** — a guest that loads a scene after the host gets state from one snapshot,
   not from an event log (`§16`).
 - **Failure paths** — kill the client and rejoin; kill the host; restart the host under a
@@ -67,8 +77,13 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   therefore drift back to whatever the game re-derives. Item visuals (the model in the
   hand) are not moved by the flag at all. This is the main open gameplay bug (`§15`,
   `§23`).
-- **The catch is not synced.** When Granny catches a player, nothing is sent: no jail, no
-  death screen, no scene change. Re-entry after a catch is untested (`§23`).
+- **The catch is only partly synced.** Each client is caught by its own session, and the
+  mod does not replay a catch on the peer: no jail, no shared death screen. The wire
+  carries the dead/alive edge, which the peer shows in its status line (`rcatch=`) but does
+  nothing else with yet. Re-entry after a catch is untested (`§23`, `§26`).
+- **Death → Menu is untested.** The spectator view ends on a scene change or after the
+  hold expires; a death that runs on into the game-over screen has not been observed, so
+  whether the view ends exactly when the game goes back to the Menu is unknown (`§26`).
 - **Scene follow skips the difficulty selection.** A guest that follows the host into
   `Scene` loads the scene directly, not through Play → difficulty → Continue. The world
   builds and the player becomes active anyway, but whether the choice matters later is
@@ -113,6 +128,7 @@ magic "GCP1" (4) | type (1) | seq (4) | payload
 | 7 | Granny | host → guest, 20 Hz | flags, position, yaw |
 | 8 | Door | both | kind (State / Snapshot / Request / SnapshotRequest), door hash, state |
 | 9 | Item | both | kind (State / Snapshot / SnapshotRequest), item hash, have flag |
+| 10 | Catch | both, on edge | alive (0 dead / 1 back), cause (informational) |
 
 Host is authoritative for the scene, Granny, doors and items. The receiver has **no reordering
 logic** — `seq` is written but not used to order. Sockets on both sides time out after
@@ -155,8 +171,9 @@ Granny.exe --coop-join=192.168.1.10 --coop-name=Guest
 same LAN or a virtual LAN (ZeroTier/Tailscale/Radmin) that is the whole setup.
 
 Test-only flags used by the harness: `--coop-autoplay` (drive the menu), `--coop-testmove`
-(walk a fixed path), `--coop-doortest`, `--coop-itemtest`, `--coop-probe`. Do not use them
-for real play.
+(walk a fixed path), `--coop-doortest`, `--coop-itemtest`, `--coop-probe`,
+`--coop-spectate` (force the spectator view without dying) and `--coop-catchtest` (walk
+onto Granny so she catches the player). Do not use them for real play.
 
 ## QA
 
@@ -181,7 +198,18 @@ relay from [`coop-anything`](https://github.com/cranebeaker/coop-anything) via
 `tools/fake-host.py` is a scripted protocol-v1 host for join-side tests with **one** game
 instance: it answers `Hello` with `Welcome`, sends `Scene` on a schedule and keeps the peer
 timeout alive. It is how scene follow was checked without a second client (~2.7 GB instead
-of ~5.4 GB).
+of ~5.4 GB). `--state-circle RADIUS` adds a fake remote player walking a circle, which is
+what the spectator camera can be checked against:
+
+```
+python -I tools/fake-host.py --port 47778 --state-circle 3 --scene Scene \
+    --scene-at 15 --scene-until 300 --seconds 300
+```
+
+A single-instance run has to start the game with the test folder as its working directory
+(`Start-Process ... -WorkingDirectory <game dir>`). Launched from anywhere else, Steamworks
+`RestartAppIfNecessary` hands the launch back to Steam, the test process exits and the
+untouched install starts instead (`docs/NOTES.md §25`).
 
 | Run | Date | What it covered | Result |
 |---|---|---|---|
@@ -194,6 +222,7 @@ of ~5.4 GB).
 | 8 s full outage | 2026-10-23 | both directions down | recovered in 10.07 s (~2 × 5 s timeout) |
 | `-DoorTest` 220 s of 420 s | 2026-10-23 | v0.4.7, host-only flipper | **0/13 door mismatches**; run cut short by machine memory pressure |
 | `fake-host.py`, one client | 2026-10-23 | scene follow both ways, boot guard | Menu → Scene and Scene → Menu followed; SplashScreen request held, load fired on the boot transition |
+| `fake-host.py` + `--coop-catchtest` | 2026-10-23 | catch and the death view (v0.5.0) | catch → 46.6 s of continuous spectating through `Camera`/`PlayerEyes`/`PlayerCamInBed`; death overlay hidden |
 
 No run has covered: a real network, three players, a full playthrough, or re-entry after
 a catch.
