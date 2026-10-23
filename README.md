@@ -26,8 +26,10 @@ Two players can host and join, see each other's avatars, see the same Granny (sh
 simulated on the host and pinned on the guest), and open/close the same doors
 (bidirectionally, host-authoritative). The shared inventory flags sync both ways, but the
 game reverts the "have" flag on its own a few seconds after a write, so items are not
-dependable yet. The catch sequence, the van, the day cycle and scene-follow are **not**
-synced.
+dependable yet. The catch sequence, the van and the day cycle are **not** synced.
+
+A guest follows the host between scenes (SplashScreen → Menu → gameplay), including a
+host that announces its scene while the guest is still booting.
 
 ## What works
 
@@ -47,6 +49,9 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
 - **Items** — the shared item table is snapshotted at prepare, changes are synced as
   `Item/State` and repaired by a 10 s snapshot. The wire path works; the game's own
   behaviour does not (see Known issues).
+- **Scene follow** — the host is authoritative for the scene; a guest loads whatever the
+  host announces, with a guard that holds the request while the guest is still in
+  `SplashScreen`, so the game's boot is not skipped (`§24`).
 - **Late join** — a guest that loads a scene after the host gets state from one snapshot,
   not from an event log (`§16`).
 - **Failure paths** — kill the client and rejoin; kill the host; restart the host under a
@@ -64,8 +69,10 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   `§23`).
 - **The catch is not synced.** When Granny catches a player, nothing is sent: no jail, no
   death screen, no scene change. Re-entry after a catch is untested (`§23`).
-- **No scene follow.** A guest that loads a new scene re-announces it; it does not follow
-  the host into another scene.
+- **Scene follow skips the difficulty selection.** A guest that follows the host into
+  `Scene` loads the scene directly, not through Play → difficulty → Continue. The world
+  builds and the player becomes active anyway, but whether the choice matters later is
+  unknown, and the path has not been exercised in a real pair (`§24`).
 - **Item deltas are incomplete.** Only the have flag is carried; counts/deltas are not.
 - **No GUI.** Configuration is MelonPreferences plus command-line flags.
 - **Door visuals after an apply are unverified.** The state is read from the game's own
@@ -107,7 +114,7 @@ magic "GCP1" (4) | type (1) | seq (4) | payload
 | 8 | Door | both | kind (State / Snapshot / Request / SnapshotRequest), door hash, state |
 | 9 | Item | both | kind (State / Snapshot / SnapshotRequest), item hash, have flag |
 
-Host is authoritative for Granny, doors and items. The receiver has **no reordering
+Host is authoritative for the scene, Granny, doors and items. The receiver has **no reordering
 logic** — `seq` is written but not used to order. Sockets on both sides time out after
 5 s of silence and fall back to single-player.
 
@@ -122,8 +129,8 @@ dotnet build -c Release
 ```
 
 The project reads `$(GRANNY_TEST)` and links MelonLoader plus the Il2Cpp assemblies from
-it; it never writes into that folder. The output is `bin/GrannyCoop.dll` (net6.0, no
-extra dependencies). Copy it into `<game dir>/Mods/`.
+it; it never writes into that folder. The output is `bin/Release/GrannyCoop.dll` (net6.0,
+no extra dependencies). Copy it into `<game dir>/Mods/`.
 
 Do not run this against your only install: copy the game folder first, as the harness
 does (`C:\Users\Public\granny-test` and `...\granny-test2`).
@@ -162,12 +169,19 @@ powershell -ExecutionPolicy Bypass -File tools/run-pair.ps1 -Seconds 240 -DoorTe
     -RelayProfile bad_wifi -RelaySeed 1042 -ChaosRoot <path to a coop-anything checkout>
 python -I tools/analyze-soak.py <run file>     # paired status samples, mismatches, memory
 python -I tools/door-order.py <packets.jsonl>  # seq inversions in the chaos log
+python -I tools/fake-host.py --port 47778 --scene Menu --scene-at 10 --scene-until 20 \
+    --scene Scene --scene-at 25 --scene-until 40 --seconds 60
 ```
 
 `run-pair.ps1` refuses to start if a `Granny.exe` is already running, tracks every
 process it spawned (and only those), and stops them at the end. `-Relay` needs the chaos
 relay from [`coop-anything`](https://github.com/cranebeaker/coop-anything) via
 `-ChaosRoot`; without it the pair talks directly.
+
+`tools/fake-host.py` is a scripted protocol-v1 host for join-side tests with **one** game
+instance: it answers `Hello` with `Welcome`, sends `Scene` on a schedule and keeps the peer
+timeout alive. It is how scene follow was checked without a second client (~2.7 GB instead
+of ~5.4 GB).
 
 | Run | Date | What it covered | Result |
 |---|---|---|---|
@@ -179,6 +193,7 @@ relay from [`coop-anything`](https://github.com/cranebeaker/coop-anything) via
 | `bad_wifi`, 240 s | 2026-10-23 | 131 c2s + 269 s2c drops, 40 dups | converged |
 | 8 s full outage | 2026-10-23 | both directions down | recovered in 10.07 s (~2 × 5 s timeout) |
 | `-DoorTest` 220 s of 420 s | 2026-10-23 | v0.4.7, host-only flipper | **0/13 door mismatches**; run cut short by machine memory pressure |
+| `fake-host.py`, one client | 2026-10-23 | scene follow both ways, boot guard | Menu → Scene and Scene → Menu followed; SplashScreen request held, load fired on the boot transition |
 
 No run has covered: a real network, three players, a full playthrough, or re-entry after
 a catch.

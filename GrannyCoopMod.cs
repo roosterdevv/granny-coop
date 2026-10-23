@@ -3,7 +3,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.4.7", "coop-anything")]
+[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.4.8", "coop-anything")]
 [assembly: MelonGame("DVloper", "Granny")]
 
 namespace GrannyCoop
@@ -20,6 +20,15 @@ namespace GrannyCoop
 
         private string _scene = "";
         private float _sendAccum;
+
+        // Guest scene follow: the host is authoritative for which scene we are
+        // in. One load in flight at a time; the load itself is what clears the
+        // request, so a scene that never arrives is retried a few times and
+        // then dropped instead of pinning the guest in a load loop.
+        private string _pendingScene;
+        private float _pendingSceneAt;
+        private int _pendingSceneTries;
+        private int _sceneFollows;
         private float _grannyAccum;
         private float _grannyBindAccum;
         private int _statusBucket = -1;
@@ -54,7 +63,7 @@ namespace GrannyCoop
             _cfg = CoopConfig.Load();
             _doors.DoorTest = _cfg.DoorTest;
             _items.ItemTest = _cfg.ItemTest;
-            LoggerUtil.Log($"COOP initialised v0.4.7 role={_cfg.Role} name='{_cfg.PlayerName}' " +
+            LoggerUtil.Log($"COOP initialised v0.4.8 role={_cfg.Role} name='{_cfg.PlayerName}' " +
                            $"addr={_cfg.Address}:{_cfg.Port} autoplay={_cfg.AutoPlay} probe={_cfg.Probe} " +
                            $"doortest={_cfg.DoorTest} itemtest={_cfg.ItemTest}");
 
@@ -93,6 +102,7 @@ namespace GrannyCoop
             if (_cfg != null && _cfg.AutoPlay) AutoPlayTick();
             if (_cfg != null && _cfg.TestMove) TestMoveTick(UnityEngine.Time.unscaledDeltaTime);
             if (_cfg != null && _cfg.Probe) _probe.Tick(FindRoot("Player"), UnityEngine.Time.unscaledDeltaTime);
+            TickSceneFollow();
 
             // Status on wall-clock 10 s boundaries, not a per-process
             // accumulator. Both test instances run on one machine, so this
@@ -123,6 +133,12 @@ namespace GrannyCoop
             _items.Reset();
             _probe.Reset();
             LoggerUtil.Log($"COOP scene -> '{sceneName}' (buildIndex={buildIndex})");
+            if (_pendingScene == sceneName)
+            {
+                _pendingScene = null;
+                _sceneFollows++;
+                LoggerUtil.Log($"COOP scene follow: reached '{sceneName}' (follow #{_sceneFollows})");
+            }
             if (_net != null && _cfg.Role == CoopRole.Host) _net.SendScene(sceneName);
         }
 
@@ -232,10 +248,35 @@ namespace GrannyCoop
                     break;
 
                 case MsgType.Scene:
+                {
                     var scene = r.Str();
-                    if (scene != _scene)
-                        LoggerUtil.Log($"COOP host is in scene '{scene}', we are in '{_scene}' (v1 does not follow)");
+                    if (scene == _scene)
+                    {
+                        if (_pendingScene == scene) _pendingScene = null;
+                        break;
+                    }
+
+                    // The host owns scene selection, so a guest follows it.
+                    // The load is attempted in TickSceneFollow and guarded by a
+                    // try/catch there: asking the engine in advance whether a
+                    // name is loadable (Application.CanStreamedLevelBeLoaded)
+                    // threw MissingMethodException on this IL2CPP build.
+                    if (_cfg.Role != CoopRole.Join) break;
+                    if (!_net.Connected) break;
+
+                    if (_pendingScene != scene)
+                    {
+                        _pendingScene = scene;
+                        _pendingSceneTries = 0;
+                        // Short delay so the load does not start inside the
+                        // socket callback, and so a burst of identical
+                        // announcements does not keep pushing the deadline
+                        // forward (a repeat leaves the deadline alone).
+                        _pendingSceneAt = UnityEngine.Time.unscaledTime + 0.5f;
+                        LoggerUtil.Log($"COOP scene follow: host entered '{scene}', loading it");
+                    }
                     break;
+                }
 
                 case MsgType.Granny:
                 {
@@ -273,6 +314,47 @@ namespace GrannyCoop
             {
                 _remote.ClearTarget();
                 _granny.ClearTarget();
+                _pendingScene = null;
+            }
+        }
+
+        // A guest follows the host's scene. Called every frame so the load
+        // happens outside the message handler (a scene load inside a socket
+        // callback would run the whole OnSceneWasLoaded chain in that stack)
+        // and so a failed or missed load is retried instead of being dropped.
+        private void TickSceneFollow()
+        {
+            if (_pendingScene == null || _cfg == null || _cfg.Role != CoopRole.Join) return;
+            if (_net == null || !_net.Connected) { _pendingScene = null; return; }
+
+            // The host re-announces its scene as soon as a guest connects,
+            // which is while the guest is still in SplashScreen. Loading then
+            // would skip the game's own boot, so hold the request until the
+            // game has reached a scene of its own; it fires on the transition.
+            if (_scene == "" || _scene == "SplashScreen") return;
+            if (UnityEngine.Time.unscaledTime < _pendingSceneAt) return;
+
+            if (_scene == _pendingScene) { _pendingScene = null; return; }
+
+            if (_pendingSceneTries >= 3)
+            {
+                LoggerUtil.Log($"COOP scene follow: gave up on '{_pendingScene}' after " +
+                               $"{_pendingSceneTries} loads, we are still in '{_scene}'");
+                _pendingScene = null;
+                return;
+            }
+
+            _pendingSceneTries++;
+            _pendingSceneAt = UnityEngine.Time.unscaledTime + 4f;
+            LoggerUtil.Log($"COOP scene follow: loading '{_pendingScene}' (try {_pendingSceneTries}/3)");
+            try
+            {
+                SceneManager.LoadScene(_pendingScene);
+            }
+            catch (Exception e)
+            {
+                LoggerUtil.Log($"COOP scene follow: load '{_pendingScene}' threw " +
+                               $"{e.GetType().Name}: {e.Message}");
             }
         }
 
