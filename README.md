@@ -16,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.5.0** |
+| Mod version | **0.5.1** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -59,9 +59,11 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   dead and sent as a `Catch` edge. While dead the client's camera follows the other player
   from eye height, and the game's full-screen fade and blood overlay are hidden so the view
   is visible. The latch is held through the whole sequence (Granny carrying the body can
-  take a minute) and released 45 s after the game's flags go clear, or at once on a scene
-  change. Verified under the scripted host: 46.6 s of continuous tracking through the
-  game's camera swaps (`§26`).
+  take a minute) and released when the game puts the player back in play — about 2 s after
+  the `Player` root reactivates — or 45 s after the game's flags go clear, or at once on a
+  scene change. Verified under the scripted host: 46.6 s of continuous tracking through the
+  game's camera swaps, and in a later run a 28.3 s view that ended 2.0 s after the revive
+  (`§26`).
 - **Late join** — a guest that loads a scene after the host gets state from one snapshot,
   not from an event log (`§16`).
 - **Failure paths** — kill the client and rejoin; kill the host; restart the host under a
@@ -223,6 +225,7 @@ untouched install starts instead (`docs/NOTES.md §25`).
 | `-DoorTest` 220 s of 420 s | 2026-10-23 | v0.4.7, host-only flipper | **0/13 door mismatches**; run cut short by machine memory pressure |
 | `fake-host.py`, one client | 2026-10-23 | scene follow both ways, boot guard | Menu → Scene and Scene → Menu followed; SplashScreen request held, load fired on the boot transition |
 | `fake-host.py` + `--coop-catchtest` | 2026-10-23 | catch and the death view (v0.5.0) | catch → 46.6 s of continuous spectating through `Camera`/`PlayerEyes`/`PlayerCamInBed`; death overlay hidden |
+| `fake-host.py` + `--coop-catchtest` | 2026-10-23 | revive releases the view (v0.5.1) | 28.3 s spectating the grab and carry, stopped 2.0 s after `player active -> True` |
 
 No run has covered: a real network, three players, a full playthrough, or re-entry after
 a catch.

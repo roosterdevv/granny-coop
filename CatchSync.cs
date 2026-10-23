@@ -40,13 +40,23 @@ namespace GrannyCoop
         // covers the grab, the carry and the game-over screen.
         private const float DeathHoldSec = 45f;
 
+        // The game revives the player in place (the Player root goes active
+        // again and play continues) well before 45 s: 26 s after the grab in
+        // the QA run. Coming back is the signal that the death is over, so if
+        // the root had gone inactive while we were dead and is active again,
+        // stop spectating after this grace instead of holding the full 45 s.
+        private const float ReviveGraceSec = 2f;
+
         private playerCaught _caught;
         private playerDead _dead;
+        private UnityEngine.GameObject _player;
         private bool _readFailed;
 
         private bool _known;
         private bool _localCaught;
         private byte _cause;
+        private bool _sawInactive;
+        private float _reviveAccum;
 
         private bool _remoteKnown;
         private bool _remoteCaught;
@@ -109,6 +119,8 @@ namespace GrannyCoop
                 StopSpectating(remote);
                 return;
             }
+
+            _player = player;
 
             if (_caught == null || _dead == null)
             {
@@ -180,10 +192,13 @@ namespace GrannyCoop
             StopSpectating(null);
             _caught = null;
             _dead = null;
+            _player = null;
             _readFailed = false;
             _known = false;
             _localCaught = false;
             _cause = CauseNone;
+            _sawInactive = false;
+            _reviveAccum = 0f;
             _remoteKnown = false;
             _remoteCaught = false;
             _remoteCause = CauseNone;
@@ -262,6 +277,21 @@ namespace GrannyCoop
             }
         }
 
+        /// <summary>True while the Player root is active. The game deactivates it
+        /// for the death sequence and activates it again on the revive.</summary>
+        private bool PlayerActive()
+        {
+            try
+            {
+                return _player != null && _player.activeSelf;
+            }
+            catch
+            {
+                _player = null;
+                return false;
+            }
+        }
+
         /// <summary>True while the game's death/game-over sequence is running.</summary>
         private bool ReadEndSeq()
         {
@@ -313,6 +343,8 @@ namespace GrannyCoop
 
             bool endSeq = ReadEndSeq();
             bool deadNow = caught || endSeq;
+            bool playerActive = PlayerActive();
+            if (!playerActive) _sawInactive = true;
 
             if (!_known)
             {
@@ -334,6 +366,8 @@ namespace GrannyCoop
                 if (_localCaught) return;
 
                 _localCaught = true;
+                _sawInactive = !playerActive;
+                _reviveAccum = 0f;
                 _cause = caught ? cause : CauseNone;
                 LoggerUtil.Log(caught
                     ? $"COOP catch: local player caught ({CauseNameOf(cause)})"
@@ -344,15 +378,25 @@ namespace GrannyCoop
 
             if (!_localCaught) return;
 
-            // Flags and end scene are both clear. Give the game a few seconds to
-            // start its end sequence before calling the player alive again: the
-            // grab flag drops before the game-over coroutine begins.
+            // Flags and end scene are both clear. Two ways out:
+            //  - the game put the player back in play (the root was inactive
+            //    while we were dead and is active again) -> the death is over;
+            //  - otherwise wait out the hold, so a grab whose end scene has not
+            //    started yet is not mistaken for a revive.
+            if (playerActive) _reviveAccum += PollIntervalSec;
+            else _reviveAccum = 0f;
+
+            bool revived = _sawInactive && _reviveAccum >= ReviveGraceSec;
             _aliveAccum += PollIntervalSec;
-            if (_aliveAccum < DeathHoldSec) return;
+            if (!revived && _aliveAccum < DeathHoldSec) return;
 
             _aliveAccum = 0f;
+            _reviveAccum = 0f;
+            _sawInactive = false;
             _localCaught = false;
-            LoggerUtil.Log("COOP catch: local player is alive again");
+            LoggerUtil.Log(revived
+                ? "COOP catch: local player is alive again"
+                : "COOP catch: death hold expired, local player is alive again");
             send?.Invoke(1, _cause);
             _cause = CauseNone;
         }
