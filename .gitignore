@@ -1,0 +1,11 @@
+# build output
+bin/
+obj/
+*.user
+
+# QA artifacts (run logs, chaos relay logs, packet captures)
+tools/runs/
+
+# never commit the game's or the loader's assemblies
+*.dll
+*.pdb
