@@ -21,6 +21,7 @@ namespace GrannyCoop
         Granny = 7,  // host -> client, Granny transform + state, 20 Hz
         Door = 8,    // both ways, door state changes, on demand
         Item = 9,    // both ways, inventory have-flags, on change + snapshots
+        Catch = 10,  // both ways, player caught / alive again, on edge
     }
 
     internal static class Protocol

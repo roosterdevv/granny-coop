@@ -3,7 +3,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.4.8", "coop-anything")]
+[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.5.0", "coop-anything")]
 [assembly: MelonGame("DVloper", "Granny")]
 
 namespace GrannyCoop
@@ -17,6 +17,7 @@ namespace GrannyCoop
         private readonly DoorSync _doors = new DoorSync();
         private readonly ItemSync _items = new ItemSync();
         private readonly WorldProbe _probe = new WorldProbe();
+        private readonly CatchSync _catch = new CatchSync();
 
         private string _scene = "";
         private float _sendAccum;
@@ -52,6 +53,10 @@ namespace GrannyCoop
         private float _testMoveClock;
         private bool _testMoveLogged;
 
+        // QA-only: teleport the local player onto Granny so a catch happens
+        // without a human driving her.
+        private float _catchTestAccum;
+
         // Auto play (test harness only)
         private int _menuFrames = -1;
         private int _afterClick;
@@ -63,9 +68,10 @@ namespace GrannyCoop
             _cfg = CoopConfig.Load();
             _doors.DoorTest = _cfg.DoorTest;
             _items.ItemTest = _cfg.ItemTest;
-            LoggerUtil.Log($"COOP initialised v0.4.8 role={_cfg.Role} name='{_cfg.PlayerName}' " +
+            LoggerUtil.Log($"COOP initialised v0.5.0 role={_cfg.Role} name='{_cfg.PlayerName}' " +
                            $"addr={_cfg.Address}:{_cfg.Port} autoplay={_cfg.AutoPlay} probe={_cfg.Probe} " +
-                           $"doortest={_cfg.DoorTest} itemtest={_cfg.ItemTest}");
+                           $"doortest={_cfg.DoorTest} itemtest={_cfg.ItemTest} " +
+                           $"spectate={_cfg.Spectate} catchtest={_cfg.CatchTest}");
 
             if (_cfg.Role == CoopRole.Off)
             {
@@ -90,7 +96,12 @@ namespace GrannyCoop
                 _net.Tick();
                 SendLocalState();
                 SyncGranny(UnityEngine.Time.unscaledDeltaTime);
+                _catch.Tick(UnityEngine.Time.unscaledDeltaTime, FindRoot("Player"), _remote,
+                    _scene == "Scene", _cfg.Spectate, _net.Connected,
+                    (alive, cause) => _net.SendCatch(alive, cause));
             }
+
+            if (_net != null && _cfg.CatchTest) CatchTestTick(UnityEngine.Time.unscaledDeltaTime);
 
             if (_net != null && _scene == "Scene")
             {
@@ -119,6 +130,11 @@ namespace GrannyCoop
             }
         }
 
+        public override void OnLateUpdate()
+        {
+            _catch.ApplyLate();
+        }
+
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             _scene = sceneName;
@@ -132,6 +148,7 @@ namespace GrannyCoop
             _doors.Reset();
             _items.Reset();
             _probe.Reset();
+            _catch.Reset();
             LoggerUtil.Log($"COOP scene -> '{sceneName}' (buildIndex={buildIndex})");
             if (_pendingScene == sceneName)
             {
@@ -295,6 +312,10 @@ namespace GrannyCoop
                 case MsgType.Item:
                     _items.OnMessage(r, _cfg.Role, _net.SendItem);
                     break;
+
+                case MsgType.Catch:
+                    _catch.OnMessage(r);
+                    break;
             }
         }
 
@@ -309,6 +330,7 @@ namespace GrannyCoop
             // (there was no peer to send it to), so re-announce on connect.
             if (connected && _cfg.Role == CoopRole.Host && !string.IsNullOrEmpty(_scene))
                 _net.SendScene(_scene);
+            if (connected) _catch.Resend((alive, cause) => _net.SendCatch(alive, cause));
 
             if (!connected)
             {
@@ -403,7 +425,7 @@ namespace GrannyCoop
                                $"scene='{_scene}' local={local} remote={rt} avVisible={_remote.IsVisible} " +
                                $"granny={gp} gRemote={gt} " +
                                $"sent={_stateSent} recv={_stateRecv} gSent={_grannySent} gRecv={_grannyRecv} " +
-                               _doors.Status() + " " + _items.Status() +
+                               _doors.Status() + " " + _items.Status() + " " + _catch.StatusText +
                                " dh=" + _doors.StateFingerprint() +
                                " ih=" + _items.StateFingerprint());
         }
@@ -452,6 +474,42 @@ namespace GrannyCoop
             float sign = phase < 4f ? 1f : -1f;
             var axis = _cfg.Role == CoopRole.Host ? Vector3.right : Vector3.forward;
             cc.Move(axis * (sign * 0.8f * dt));
+        }
+
+        // ---- QA-only catch driver -------------------------------------------
+
+        // Granny has to be close enough to grab the player, and a headless test
+        // cannot walk there. Once a second, move the character body onto her.
+        // It stops as soon as the game reports the catch, so the death sequence
+        // runs undisturbed, and resumes if the player gets up again.
+        private void CatchTestTick(float dt)
+        {
+            if (_scene != "Scene" || _catch.LocalCaught) { _catchTestAccum = 0f; return; }
+            if (!_granny.HasGranny) return;
+
+            _catchTestAccum += dt;
+            if (_catchTestAccum < 1f) return;
+            _catchTestAccum = 0f;
+
+            var player = FindRoot("Player");
+            if (player == null || !player.activeSelf) return;
+            var cc = BodyOf(player);
+            if (cc == null) return;
+
+            try
+            {
+                var gp = _granny.Position;
+                var dest = new Vector3(gp.x + 0.6f, gp.y + 0.02f, gp.z + 0.6f);
+                bool wasEnabled = cc.enabled;
+                cc.enabled = false;
+                cc.transform.position = dest;
+                cc.enabled = wasEnabled;
+                LoggerUtil.Log($"COOP catchtest: moved the player onto Granny at {gp}");
+            }
+            catch (Exception e)
+            {
+                LoggerUtil.Log("COOP catchtest FAILED: " + e.GetType().Name + ": " + e.Message);
+            }
         }
 
         // ---- test harness: drive the menu without a human -------------------

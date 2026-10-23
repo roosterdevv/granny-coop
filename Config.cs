@@ -21,6 +21,8 @@ namespace GrannyCoop
         public bool Probe;
         public bool DoorTest;
         public bool ItemTest;
+        public bool Spectate;   // QA: force the spectator view without dying
+        public bool CatchTest;  // QA: teleport onto Granny so she catches us
 
         public static CoopConfig Load()
         {
@@ -64,6 +66,8 @@ namespace GrannyCoop
                 else if (a == "coop-probe") cfg.Probe = true;
                 else if (a == "coop-doortest") cfg.DoorTest = true;
                 else if (a == "coop-itemtest") cfg.ItemTest = true;
+                else if (a == "coop-spectate") cfg.Spectate = true;
+                else if (a == "coop-catchtest") cfg.CatchTest = true;
                 else if (a.StartsWith("coop-join=", StringComparison.OrdinalIgnoreCase))
                 {
                     cfg.Role = CoopRole.Join;

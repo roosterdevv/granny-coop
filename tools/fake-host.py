@@ -15,6 +15,7 @@ Times are seconds after Welcome is sent.
 """
 
 import argparse
+import math
 import select
 import socket
 import struct
@@ -78,6 +79,9 @@ def main():
     ap.add_argument("--scene-at", action="append", type=float, default=[])
     ap.add_argument("--scene-until", action="append", type=float, default=[])
     ap.add_argument("--seconds", type=float, default=85)
+    ap.add_argument("--state-circle", type=float, default=0.0, metavar="RADIUS",
+                    help="send a moving player State at 20 Hz round a circle of this "
+                         "radius (QA: gives the spectator camera a known path)")
     args = ap.parse_args()
 
     if not (len(args.scene) == len(args.scene_at) == len(args.scene_until)):
@@ -92,6 +96,8 @@ def main():
     welcomed_at = None
     last_scene = None
     last_state = 0.0
+    next_circle_state = 0.0
+    last_reset_log = 0.0
     hellos = 0
 
     while True:
@@ -102,7 +108,17 @@ def main():
 
         ready, _, _ = select.select([sock], [], [], 0.1)
         if ready:
-            data, addr = sock.recvfrom(2048)
+            try:
+                data, addr = sock.recvfrom(2048)
+            except ConnectionResetError:
+                # Windows reports ICMP port-unreachable from a datagram we sent
+                # to a port that has since closed (the game exiting or recreating
+                # its socket). The listener itself is fine, so keep going; log it
+                # at most once a second so a dead guest does not flood the output.
+                if now - last_reset_log >= 1.0:
+                    last_reset_log = now
+                    log("peer port reset (ICMP unreachable); still listening")
+                continue
             if len(data) < 9 or struct.unpack_from("<I", data)[0] != MAGIC:
                 continue
             kind = data[4]
@@ -139,6 +155,19 @@ def main():
                 break
             if elapsed > end and last_scene == scene:
                 last_scene = None
+
+        # QA spectator test: a valid player State walking a circle, at 20 Hz.
+        # It also acts as keep-alive, so the idle heartbeat is skipped.
+        if args.state_circle > 0.0 and now >= next_circle_state:
+            next_circle_state = now + 0.05
+            angle = elapsed * 0.8
+            x = args.state_circle * math.cos(angle)
+            z = args.state_circle * math.sin(angle)
+            yaw = (90.0 - math.degrees(angle)) % 360.0
+            payload = (bytes([0, 1]) +
+                       struct.pack("<fffff", x, 0.0, z, yaw, 0.0))
+            sock.sendto(wire.msg(STATE, payload), peer)
+            continue
 
         # The guest drops a peer that is silent for 5 s, so keep it alive with
         # an idle State message while no scene window is open.

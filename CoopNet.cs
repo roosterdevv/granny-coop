@@ -186,6 +186,11 @@ namespace GrannyCoop
                     AppMessage?.Invoke(r);
                     return;
 
+                case MsgType.Catch:
+                    _lastHeardUtc = DateTime.UtcNow;
+                    AppMessage?.Invoke(r);
+                    return;
+
                 case MsgType.Bye:
                     LoggerUtil.Log("COOP peer said goodbye");
                     RemoteName = "";
@@ -289,6 +294,17 @@ namespace GrannyCoop
             if (!Connected || _peer == null) return false;
             var w = new MsgWriter(MsgType.Item, NextSeq()).Bytes(body);
             SendTo(_peer, w.ToArray());
+            return true;
+        }
+
+        /// <summary>Either side: this player was caught (alive=0) or is back
+        /// (alive=1). cause is one of CatchSync.Cause*; it is only informational
+        /// and lets the peer log why the other player dropped.</summary>
+        public bool SendCatch(byte alive, byte cause)
+        {
+            if (!Connected || _peer == null) return false;
+            SendTo(_peer, new MsgWriter(MsgType.Catch, NextSeq())
+                .Byte(alive).Byte(cause).ToArray());
             return true;
         }
 

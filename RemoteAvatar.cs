@@ -25,6 +25,10 @@ namespace GrannyCoop
         /// <summary>True when the avatar exists and a camera rendered it this frame.</summary>
         public bool IsVisible => _root != null && _root.activeSelf && _rend != null && _rend.isVisible;
 
+        /// <summary>The spectator camera sits inside this avatar's head, so the
+        /// capsule and nose have to go while it is following. Set by CatchSync.</summary>
+        public bool FirstPersonHidden { get; set; }
+
         public void SetTarget(byte flags, float x, float y, float z, float yaw, float pitch)
         {
             HasTarget = (flags & Protocol.FlagPlayerValid) != 0;
@@ -37,7 +41,7 @@ namespace GrannyCoop
 
         public void Tick(float dt, bool remoteInGameplayScene)
         {
-            bool visible = HasTarget && remoteInGameplayScene;
+            bool visible = HasTarget && remoteInGameplayScene && !FirstPersonHidden;
             if (!visible)
             {
                 if (_root != null) _root.SetActive(false);
