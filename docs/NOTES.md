@@ -2373,3 +2373,55 @@ real guest sits in `Menu` and waits.
 
 **Next.** Watch one full death in a real pair (needs the owner's go-ahead) and confirm the
 Menu transition stops spectating and restores the overlay.
+
+## 27. The item flag does not revert by itself — `CheckInventory` reverts it (v0.5.4, 2026-10-23)
+
+§15 and §23 recorded a have-flag write from outside "reverting after 7–8 s" and blamed an
+unknown game updater. A probe (`--coop-itemprobe`) settled it.
+
+**What the probe found.** `InventoryController` declares exactly seven patchable methods —
+`Update`, `CheckInventory`, `placePlankaHole`, `NoText`, `textTimer1`, `NoObjectText`,
+`PlanktextTimer` — plus 506 property accessors, which HarmonyX cannot patch on IL2CPP
+("field accessor, it can't be patched") and which the probe therefore skips. A scan of the
+whole assembly for `pickup` in a method name lists 37 candidates, all on other components
+(`PickUp`, `PickUpNew`, bed/coffin buttons), none on the controller: there is no "give the
+player an item" entry point to call.
+
+**What the probe measured.**
+
+- A flag written from outside **holds**. In a 60 s QA cycle with no intervening call it was
+  still `have` at +60 s. The game's `Update` never touched it.
+- The flag alone moves **nothing**: at +1 s the hand object was still inactive with zero
+  children and the world model was still active. The game does not read the flag to build
+  the hand.
+- The only thing that reverted it was an explicit `CheckInventory()`, which re-derives every
+  flag from the world objects. The game called it zero times in normal play; the caller was
+  our own QA refresh, so the "7–8 s self-revert" was our measurement undoing itself.
+
+**What the mod does now (v0.5.4–0.6.0).** `Apply()` writes the flag and then calls a new
+`ApplyVisual()`: the hand slot is activated, the world model is cloned into the empty slot
+(`Coop<Item>`, local zero transform) and the world object is deactivated; a drop reverses
+all three. Each entry owns its replica (`Entry.Spawned`) so two items never share one clone,
+and `Reset()` destroys them. `CheckInventory` is never called in the sync path.
+
+**Both directions (v0.6.0).** The poll used to run on the host only, so a guest pickup was
+undone by the next host table. The poll now runs on both ends, with one guard: a joining
+guest stays quiet until its first host table arrives, because its freshly scanned flags are
+local defaults, not news. `Item/State` is accepted on either role.
+
+**Verified.** Two instances on one PC (port 47778), `--coop-itemtest` on the guest:
+guest wrote `Hammare=have` at 15:35:51.439; host logged
+`apply Hammare=have was=none now=have obj=HammerHand(active=y …) tr=Hammer(active=n)`
+at 15:35:51.448 (9 ms later). The guest's own visual followed at 15:35:52.410. The reverse
+direction had been confirmed by the same apply line on the guest in the run before.
+
+**Unknown.**
+
+- A **human** pickup has not been exercised: the QA cycle writes the flag directly. Whether
+  the game's `PickUp`/`PickUpNew` components write the same flags (and which ones) is not
+  mapped. This is the main reason the docs still call the item path "network-verified,
+  gameplay-unverified".
+- The hand model is a clone of the world model. It may differ visually from the game's own
+  hand prefab, and no pickup animation or sound plays.
+- Doors and items were never exercised together over a long session; the 10 s snapshots
+  have not been checked against a human swapping items repeatedly.

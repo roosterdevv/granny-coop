@@ -16,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.5.3** |
+| Mod version | **0.6.0** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -25,10 +25,10 @@ nobody has played the game through in co-op yet.
 
 Two players can host and join, see each other's avatars, see the same Granny (she is
 simulated on the host and pinned on the guest), and open/close the same doors
-(bidirectionally, host-authoritative). The shared inventory flags sync both ways, but the
-game reverts the "have" flag on its own a few seconds after a write, so items are not
-dependable yet. The van and the day cycle are **not** synced, and a catch is not replayed
-on the other client: each side plays its own death, and the wire carries only the
+(bidirectionally, host-authoritative). The shared inventory flags sync both ways, and the
+receiving end puts the item in the hand and takes it out of the world itself, so a pickup
+shows on both ends. The van and the day cycle are **not** synced, and a catch is not
+replayed on the other client: each side plays its own death, and the wire carries only the
 dead/alive edge, which switches the caught player to a spectator view of the other one.
 
 A guest follows the host between scenes (SplashScreen → Menu → gameplay), including a
@@ -50,8 +50,12 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   back to locked). Last result: **0 door mismatches in 13 paired samples** with the host
   as the only flipper (`§23`).
 - **Items** — the shared item table is snapshotted at prepare, changes are synced as
-  `Item/State` and repaired by a 10 s snapshot. The wire path works; the game's own
-  behaviour does not (see Known issues).
+  `Item/State` **in both directions** (a pickup on either end) and repaired by a 10 s
+  snapshot. The have flag is written directly and stays put, and the receiving end
+  mirrors the objects itself: it activates the hand slot, clones the world model into it
+  and hides the world object (reversed on a drop). In the 2026-10-23 run the guest picked
+  up the hammer and the host adopted the write (`apply Hammare=have was=none now=have`)
+  (`§27`).
 - **Scene follow** — the host is authoritative for the scene; a guest loads whatever the
   host announces, with a guard that holds the request while the guest is still in
   `SplashScreen`, so the game's boot is not skipped (`§24`).
@@ -76,11 +80,19 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
 
 ## Known issues
 
-- **The item "have" flag self-reverts.** About 7–8 s after a write, the game sets it back
-  on its own, on both ends, including on an end that never calls `CheckInventory`. Items
-  therefore drift back to whatever the game re-derives. Item visuals (the model in the
-  hand) are not moved by the flag at all. This is the main open gameplay bug (`§15`,
-  `§23`).
+- **The item flag revert is `CheckInventory`.** It used to look like the game set the
+  have flag back 7–8 s after a write. Measurements (2026-10-23) show otherwise: the write
+  **holds** (untouched for 60 s in a test) and the game's `Update` leaves it alone; the
+  only thing that reverts it is an explicit `CheckInventory()`, which re-derives every
+  flag from the world objects — and the only caller was our own QA refresh. The mod no
+  longer calls it (`§27`).
+- **The item visual is a replica.** On receive, the mod clones the world model into the
+  hand slot; it may look different from the game's own hand prefab, and the pickup
+  animation/sound is not played.
+- **A human pickup is untested.** The two-way path was verified by writing the flag from
+  the QA cycle, not by looking at an item and pressing a key; mapping the pickup
+  components (`PickUp`, `PickUpNew`, the bed/coffin buttons) to inventory flags is not
+  done yet (`§27`).
 - **The catch is only partly synced.** Each client is caught by its own session, and the
   mod does not replay a catch on the peer: no jail, no shared death screen. The wire
   carries the dead/alive edge; the peer shows it in its status line (`rcatch=`) and hides
@@ -159,6 +171,9 @@ does (`C:\Users\Public\granny-test` and `...\granny-test2`).
 
 ## Run
 
+Step-by-step player install (MelonLoader + DLL, RU/EN) is in
+[`docs/INSTALL.md`](docs/INSTALL.md); a built `GrannyCoop.dll` is attached to releases.
+
 Host:
 
 ```
@@ -235,9 +250,11 @@ untouched install starts instead (`docs/NOTES.md §25`).
 | `fake-host.py` + `--coop-catchtest` | 2026-10-23 | revive releases the view (v0.5.1) | 28.3 s spectating the grab and carry, stopped 2.0 s after `player active -> True` |
 | `fake-host.py --catch-at/--revive-at` | 2026-10-23 | remote catch on the survivor (v0.5.2) | `Catch` edge hid the peer's avatar (`avVisible=False`, `rcatch=granny`), shown again on the revive |
 | `fake-host.py` + `--coop-catchtest` | 2026-10-23 | scene change while dead (v0.5.3) | forced `Menu` request during the death → spectate stopped before the load, host received `Catch alive` |
+| two clients, `--coop-itemtest` on the guest | 2026-10-23 | item write holds and mirrors (v0.5.4) | flag survived a 60 s hold untouched; flag alone moved nothing; the hand replica appears with the flag; host adopted the guest's write (`apply Hammare=have was=none now=have`) |
+| two clients, `--coop-itemtest` on the guest | 2026-10-23 | guest → host pickup (v0.6.0) | guest wrote `Hammare=have`, host applied it within 40 ms and mirrored the hand; host→guest direction re-confirmed in the same run |
 
-No run has covered: a real network, three players, a full playthrough, or re-entry after
-a catch.
+No run has covered: a real network, three players, a full playthrough, a human pickup, or
+re-entry after a catch.
 
 ## Notes and prior art
 

@@ -37,6 +37,11 @@ namespace GrannyCoop
             public PropertyInfo Obj;
             public PropertyInfo Tr;
             public bool Last;
+            /// <summary>Copy of the world model placed in the hand while this
+            /// end has the item. Only the end that applies a state creates one
+            /// (see ApplyVisual); the end that really picked the item up has the
+            /// game's own model there.</summary>
+            public GameObject Spawned;
         }
 
         private readonly List<Entry> _items = new List<Entry>();
@@ -62,8 +67,21 @@ namespace GrannyCoop
         private float _testClock = -1f;
         private Entry _testItem;
 
+        /// <summary>QA only (--coop-itemprobe): wrap every InventoryController
+        /// method so the one that reverts a written have-flag names itself.</summary>
+        public bool ItemProbe;
+
+        private readonly ItemProbe _probe = new ItemProbe();
+
         public void Reset()
         {
+            _probe.Detach();
+            foreach (var e in _items)
+            {
+                try { if (e.Spawned != null) UnityEngine.Object.Destroy(e.Spawned); }
+                catch (Exception) { }
+                e.Spawned = null;
+            }
             _items.Clear();
             _inv = null;
             _prepared = false;
@@ -102,7 +120,12 @@ namespace GrannyCoop
             if (_pollAccum >= PollInterval)
             {
                 _pollAccum = 0f;
-                if (role == CoopRole.Host) Poll(send);
+                // Both ends poll: the host owns the table, but a guest that
+                // picks something up has to be able to say so, or its own
+                // pickup is undone by the next table. Until the first table
+                // arrives the guest must stay quiet — its freshly scanned flags
+                // are local defaults, not news.
+                if (!(role == CoopRole.Join && !_gotSnapshot)) Poll(send);
 
                 if (role == CoopRole.Host)
                 {
@@ -115,7 +138,9 @@ namespace GrannyCoop
                 }
             }
 
-            if (role == CoopRole.Host && ItemTest) TickItemTest(dt);
+            // The QA cycle runs on either end: on the host it is the ordinary
+            // table direction, on the guest it checks the pickup upstream.
+            if (ItemTest) TickItemTest(dt);
 
             // Until the first table arrives, ask again: the host may still have
             // been in its menu when the join handshake completed.
@@ -222,6 +247,13 @@ namespace GrannyCoop
                            " trueAtStart=" + trueNow + ":" + trues);
 
             _testItem = FindItem("hammare") ?? (_items.Count > 0 ? _items[0] : null);
+
+            if (ItemProbe)
+            {
+                var flags = new List<KeyValuePair<string, PropertyInfo>>(_items.Count);
+                foreach (var e in _items) flags.Add(new KeyValuePair<string, PropertyInfo>(e.Name, e.Have));
+                _probe.Attach((InventoryController)_inv, flags);
+            }
         }
 
         private Entry FindItem(string name)
@@ -275,10 +307,13 @@ namespace GrannyCoop
             e.Last = value;
             Applied++;
 
-            // The have-flag alone is the reliable part (NOTES 15): calling
-            // CheckInventory here would re-derive the flag from the objects and
-            // undo the write, so it stays out of the apply path until the
-            // object side is understood.
+            // The flag alone is durable (QA: it held for 60 s untouched) but it
+            // does not move a single object — the game's Update ignores it — so
+            // the receiving end has to mirror the objects too, or the item stays
+            // in the world and never shows in the hand. CheckInventory stays out
+            // of this path: it re-derives every flag from the world objects and
+            // is the one thing that undoes the write (Notes §27).
+            ApplyVisual(e, value);
             LoggerUtil.Log("COOP items: apply " + e.Name + "=" + (value ? "have" : "none") +
                            " was=" + (before ? "have" : "none") +
                            " now=" + (Read(e) ? "have" : "none") +
@@ -345,9 +380,13 @@ namespace GrannyCoop
             catch { return "!"; }
         }
 
-        /// <summary>QA only: move the two objects a pickup moves, so we can see
-        /// which of them the game derives the have-flag from.</summary>
-        private void SetVisual(Entry e, bool held)
+        /// <summary>Move the objects a real pickup moves: show the model in the
+        /// hand and take it out of the world. The game does this itself only on
+        /// a real pickup, so the end that mirrors a state has to do it by hand.
+        /// The hand slot starts empty and is filled with a copy of the world
+        /// model, which is what the game appears to do as well (HammerHand has
+        /// no children before the first pickup). Safe to call repeatedly.</summary>
+        private void ApplyVisual(Entry e, bool held)
         {
             var hand = e.Obj != null ? e.Obj.GetValue(_inv) as GameObject : null;
             var world = e.Tr != null ? e.Tr.GetValue(_inv) as Transform : null;
@@ -358,42 +397,37 @@ namespace GrannyCoop
                 {
                     if (hand != null) hand.SetActive(true);
                 }
-                catch (Exception ex) { LoggerUtil.Log("COOP itemtest: hand FAILED: " + ex.GetType().Name + ": " + ex.Message); }
+                catch (Exception ex) { LoggerUtil.Log("COOP items: hand FAILED on " + e.Name + ": " + ex.GetType().Name + ": " + ex.Message); }
 
-                // The hand slot starts empty; a real pickup presumably puts the
-                // item's model in it. Try that, and see whether CheckInventory
-                // then keeps the flag we wrote.
                 try
                 {
                     if (hand != null && hand.transform.childCount == 0 && world != null)
                     {
-                        _spawned = UnityEngine.Object.Instantiate(world.gameObject, hand.transform);
-                        _spawned.name = "Coop" + e.Name;
-                        _spawned.SetActive(true);
-                        _spawned.transform.localPosition = Vector3.zero;
-                        _spawned.transform.localRotation = Quaternion.identity;
+                        e.Spawned = UnityEngine.Object.Instantiate(world.gameObject, hand.transform);
+                        e.Spawned.name = "Coop" + e.Name;
+                        e.Spawned.SetActive(true);
+                        e.Spawned.transform.localPosition = Vector3.zero;
+                        e.Spawned.transform.localRotation = Quaternion.identity;
                     }
                 }
-                catch (Exception ex) { LoggerUtil.Log("COOP itemtest: spawn FAILED: " + ex.GetType().Name + ": " + ex.Message); }
+                catch (Exception ex) { LoggerUtil.Log("COOP items: spawn FAILED on " + e.Name + ": " + ex.GetType().Name + ": " + ex.Message); }
 
                 try
                 {
                     if (world != null) world.gameObject.SetActive(false);
                 }
-                catch (Exception ex) { LoggerUtil.Log("COOP itemtest: world FAILED: " + ex.GetType().Name + ": " + ex.Message); }
+                catch (Exception ex) { LoggerUtil.Log("COOP items: world FAILED on " + e.Name + ": " + ex.GetType().Name + ": " + ex.Message); }
             }
             else
             {
-                try { if (_spawned != null) UnityEngine.Object.Destroy(_spawned); _spawned = null; }
-                catch (Exception) { _spawned = null; }
+                try { if (e.Spawned != null) UnityEngine.Object.Destroy(e.Spawned); e.Spawned = null; }
+                catch (Exception) { e.Spawned = null; }
                 try { if (hand != null) hand.SetActive(false); }
                 catch (Exception) { }
                 try { if (world != null) world.gameObject.SetActive(true); }
                 catch (Exception) { }
             }
         }
-
-        private GameObject _spawned;
 
         // ---- QA hook ---------------------------------------------------------
 
@@ -422,23 +456,29 @@ namespace GrannyCoop
                     LoggerUtil.Log("COOP itemtest: writing have=true, before=" +
                                    (Read(_testItem) ? "have" : "none") + " " + Describe(_testItem));
                     Write(_testItem, true);
-                    SetVisual(_testItem, true);
-                    LoggerUtil.Log("COOP itemtest: after write+visual " + Describe(_testItem));
+                    LoggerUtil.Log("COOP itemtest: after write only " + Describe(_testItem));
                     _testAt = _testClock + 1f;
                     _testPhase = 1;
                     break;
 
                 case 1:
-                    LoggerUtil.Log("COOP itemtest: +1s have=" +
+                    // Flag written, visuals untouched: if the game's own Update
+                    // shows the item in hand from the flag, the mod needs no
+                    // visual code on the receiving end at all.
+                    LoggerUtil.Log("COOP itemtest: +1s flag-only have=" +
                                    (Read(_testItem) ? "have" : "none") + " " + Describe(_testItem));
-                    // Hold without touching anything for 8 s: does the game's own
-                    // code revert the flag, or only our explicit CheckInventory?
-                    _testAt = _testClock + 7f;
+                    ApplyVisual(_testItem, true);
+                    LoggerUtil.Log("COOP itemtest: after visual " + Describe(_testItem));
+                    // Hold without touching anything for a minute: does the game's
+                    // own code revert the flag, or only our explicit CheckInventory?
+                    // The 8 s hold this used to do was too short to tell, because
+                    // the refresh below was itself what flipped the flag back.
+                    _testAt = _testClock + 59f;
                     _testPhase = 5;
                     break;
 
                 case 5:
-                    LoggerUtil.Log("COOP itemtest: +8s hold have=" +
+                    LoggerUtil.Log("COOP itemtest: +60s hold have=" +
                                    (Read(_testItem) ? "have" : "none") + " " + Describe(_testItem));
                     LoggerUtil.Log("COOP itemtest: refresh -> " +
                                    (Refresh() ? "ok" : "no") + " have=" +
@@ -451,7 +491,7 @@ namespace GrannyCoop
                     LoggerUtil.Log("COOP itemtest: writing have=false, before=" +
                                    (Read(_testItem) ? "have" : "none") + " " + Describe(_testItem));
                     Write(_testItem, false);
-                    SetVisual(_testItem, false);
+                    ApplyVisual(_testItem, false);
                     LoggerUtil.Log("COOP itemtest: after write+visual " + Describe(_testItem));
                     _testAt = _testClock + 1f;
                     _testPhase = 3;
@@ -527,7 +567,9 @@ namespace GrannyCoop
             {
                 case KindState:
                 {
-                    if (role != CoopRole.Join || _inv == null) break;
+                    // Host -> client is the table; client -> host is a local
+                    // pickup the host adopts and then republishes on its own poll.
+                    if (_inv == null || !_prepared) break;
                     uint hash = r.U32();
                     bool value = r.Byte() != 0;
                     var e = Find(hash);
@@ -617,7 +659,8 @@ namespace GrannyCoop
         {
             return "items=" + _items.Count + " iSent=" + Sent +
                    " iRecv=" + Recv + " iApplied=" + Applied +
-                   " iRefresh=" + _refreshOk + "/" + (_refreshOk + _refreshFails);
+                   " iRefresh=" + _refreshOk + "/" + (_refreshOk + _refreshFails) +
+                   (ItemProbe ? " " + _probe.Status() : "");
         }
     }
 }
