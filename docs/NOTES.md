@@ -2425,3 +2425,31 @@ direction had been confirmed by the same apply line on the guest in the run befo
   hand prefab, and no pickup animation or sound plays.
 - Doors and items were never exercised together over a long session; the 10 s snapshots
   have not been checked against a human swapping items repeatedly.
+
+## §28 The pickup scan found no action method to call (v0.6.0, 2026-10-23)
+
+§27 left one question open: a **human** pickup — does `PickUp`/`PickUpNew` write the same
+`have` flags? A bot test would settle it, so `--coop-itemprobe` scanned every type in the
+game assembly for methods with "pickup" in the name (declared-only, every visibility,
+case-insensitive). 37 hits, and **all 37 are property accessors**: `get_/set_pickupButton`
+on `bedButton`, `bedButton2/3`, `coffinButton`, `coffinButtonBackyard`, `insideCarButton`;
+`PickUp.get_pickUp/set_pickUp(Boolean)`, `get_readyPickUp/set_readyPickUp(Boolean)`,
+`get_/set_pickUpGascan(AudioClip)`; `PickUpNew.get_/set_pickUpButton(GameObject)`,
+`get_/set_pickUp(Boolean)`; `InventoryController.get_/set_textPickUpOn(Boolean)`. No method
+that performs the pickup carries a "pickup" name — the interaction is probably done in the
+player's input/raycast path and then inside the component's own `Update` or trigger, none of
+which the name filter reaches.
+
+What this means:
+
+- There is nothing for a bot to invoke directly. A human-pickup test needs real input (a
+  person, or an input injector), so it stays out of the bot harness.
+- The mod's item poll already reads whatever flag the game writes, 0.2 s apart, so if a
+  human pickup writes the flag the sync works with no code change.
+- If a human pickup instead only spawns an object in the hand, the poll sees nothing and
+  the item would not sync. Which of those happens is still **unknown**; README and
+  INSTALL keep saying "human pickup untested".
+
+Way in for the next agent: patch `PickUp.Update` (and `PickUpNew.Update`) instead of
+call-matching, log `InventoryController` flags around one manual pickup of a known item,
+and record whether a flag flipped and whether the world object disappeared.
