@@ -95,6 +95,16 @@ namespace GrannyCoop
         private Quaternion _applyRot;
         private bool _apply;
 
+        // Last pose received for the peer. The peer's Player root goes inactive
+        // for a moment during its own catch/death sequence, and the state packet
+        // then carries no transform (FlagPlayerValid is unset), which used to
+        // stop the spectator camera at the very moment it was needed. Keep the
+        // last pose and follow that until a live one arrives again.
+        private bool _seenTarget;
+        private Vector3 _lastTarget;
+        private float _lastYaw;
+        private float _lastPitch;
+
         public bool LocalCaught => _localCaught;
         public bool RemoteCaught => _remoteCaught;
         public bool RemoteKnown => _remoteKnown;
@@ -120,6 +130,7 @@ namespace GrannyCoop
         {
             if (!inScene)
             {
+                _seenTarget = false;
                 StopSpectating(remote);
                 return;
             }
@@ -150,8 +161,20 @@ namespace GrannyCoop
                 }
             }
 
+            if (remote != null && remote.HasTarget)
+            {
+                _seenTarget = true;
+                _lastTarget = remote.Target;
+                _lastYaw = remote.TargetYaw;
+                _lastPitch = remote.TargetPitch;
+            }
+            else if (!connected)
+            {
+                _seenTarget = false;
+            }
+
             bool want = (_localCaught || forceSpectate) && connected &&
-                        remote != null && remote.HasTarget;
+                        remote != null && _seenTarget;
             if (want) Spectate(dt, remote);
             else StopSpectating(remote);
         }
@@ -236,6 +259,10 @@ namespace GrannyCoop
             _camSaved = false;
             _camName = "-";
             _camLogged = false;
+            _seenTarget = false;
+            _lastTarget = Vector3.zero;
+            _lastYaw = 0f;
+            _lastPitch = 0f;
         }
 
         // ---- catch state ----------------------------------------------------
@@ -503,8 +530,25 @@ namespace GrannyCoop
 
             // The remote state is the body pivot; a first-person view sits at
             // the other player's eye height. Snap on a teleport (bed, car,
-            // scene change) instead of gliding across the map.
-            var target = remote.Target + new Vector3(0f, EyeHeight, 0f);
+            // scene change) instead of gliding across the map. While the peer's
+            // Player root is briefly inactive the live target is gone, so the
+            // last pose is used and the view holds still instead of stopping.
+            Vector3 targetPos;
+            float yaw, pitch;
+            if (remote.HasTarget)
+            {
+                targetPos = remote.Target;
+                yaw = remote.TargetYaw;
+                pitch = remote.TargetPitch;
+            }
+            else
+            {
+                targetPos = _lastTarget;
+                yaw = _lastYaw;
+                pitch = _lastPitch;
+            }
+
+            var target = targetPos + new Vector3(0f, EyeHeight, 0f);
             if (!_posKnown || Vector3.Distance(target, _pos) > 8f)
             {
                 _pos = target;
@@ -516,7 +560,7 @@ namespace GrannyCoop
             }
 
             _applyPos = _pos;
-            _applyRot = Quaternion.Euler(remote.TargetPitch, remote.TargetYaw, 0f);
+            _applyRot = Quaternion.Euler(pitch, yaw, 0f);
             _apply = true;
 
             _logAccum += dt;
@@ -524,13 +568,14 @@ namespace GrannyCoop
             {
                 _logAccum = 0f;
                 LoggerUtil.Log($"COOP spectate: cam='{_camName}' at {Fmt(_pos)} " +
-                               $"target={Fmt(remote.Target)} yaw={remote.TargetYaw:F1} pitch={remote.TargetPitch:F1}");
+                               $"target={Fmt(targetPos)} yaw={yaw:F1} pitch={pitch:F1}" +
+                               (remote.HasTarget ? "" : " (last known)"));
             }
         }
 
         private Camera EnsureCam()
         {
-            if (_cam != null && _cam.enabled && _cam.gameObject.activeInHierarchy)
+            if (_cam != null && _cam.enabled && _cam.gameObject.activeSelf)
                 return _cam;
 
             // Prefer a camera that is already rendering the scene: its layers,

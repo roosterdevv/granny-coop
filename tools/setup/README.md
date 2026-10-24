@@ -77,6 +77,12 @@ Tested on a fresh copy of the game (`granny-test3`):
 - first game launch: `COOP initialised v0.8.0 role=Host`, `COOP net listening on
   udp/47790`, `COOP scene -> 'SplashScreen'`.
 
+The 0.8.1 rebuild (2026-10-24) was installed over the same copy with
+`--install <dir> --role off --silent`: exit 0, and `Mods/GrannyCoop.dll` came out
+byte-identical to `bin/Release/GrannyCoop.dll` (SHA-256 `432bb7f6…`). One launch showed
+`COOP initialised v0.8.1 role=Off`. A 0.8.1 host+guest pair was smoke-tested separately
+(`role=Host` and `role=Join`, 60 s, no errors).
+
 The runtime install path was triggered twice on a machine that already had 6.0.36 (the
 detection bug is fixed); it has **not** been run on a clean Windows without .NET 6, and
 the UAC prompt has **not** been seen — the test shell had the runtime present.

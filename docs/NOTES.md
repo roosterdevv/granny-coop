@@ -2625,3 +2625,95 @@ them. An item spawned by the game after prepare (new day) is picked up by the ne
 (physics, QA nudge) and the next table undoes it, which is intended, but a guest that
 drops an item sends only that one record — a simultaneous host table can briefly win
 before the host's next capture reads the dropped position. Not observed in a run yet.
+
+## 31. v0.8.1: the vase that moves is the one you can see (2026-10-24)
+
+**Report.** "Предметы видно в руках но при этом они все равно асинхронизированы если я
+возьму вазу и брушу ее то у другого игрока она продолжит быть на старом месте пока он сам
+не перебросит ее куданибудь и уже его действие не будет видно соответственно хосту, также
+присутствуют баги с наблюдателем."
+
+Two separate faults.
+
+**1. The placement table moved the prefab, not the world object.** `ItemSync` took each
+item's transform from `InventoryController.new<Item>`. The QA harness (`--coop-dropvis`)
+proved `newvas` is the root of the **uninstantiated prefab**: name `Vas`, path `Vas`, it
+never appears in a scene scan and never moves. The visible scene vase is
+`UsefulObjects/Vas`; a real drop instantiates a fresh `Vas(Clone)` at
+`HandHoldObjects/DropPoint`. So the host captured a frozen prefab pose, and every
+`ApplyPlacement` wrote the host's pose back onto that prefab — which nothing renders. That
+is exactly the report: the peer's vase stays at its old place. The same mismatch on the
+guest side meant a local drop produced a record computed from the prefab, so the host
+never saw the guest's throw.
+
+Fix: `ItemSync` resolves each item's live world object from a cached by-name scene
+transform index (`FindObjectsInactive.Include`, rebuilt at most once per frame). It looks
+for `Name(Clone)` first, then the original; an active object beats an inactive one, and a
+drop hint picks the nearest. It skips the prefab root `Vas`, anything under
+`HandHoldObjects`, and the mod's own objects. The lookup is repeated before each apply and
+after each local drop, because a drop replaces the original with a clone. An item with no
+scene object falls back to `SpawnWorld`, which instantiates its prefab at the host's pose.
+
+**2. `CheckInventory()` is the drop handler, so the harness had never held anything.**
+Calling it with the hand socket inactive *is* the drop: it instantiates the item at
+`DropPoint` and clears `have<Item>` in the same frame. The old harness wrote the flag and
+then called `CheckInventory`, so every "hold" was really a drop; the true false →
+true → false edge never reached the wire and the held path was never exercised. The
+genuine sequence, now used by `--coop-dropvis`:
+
+- **hold:** deactivate the world item, activate `HandHoldObjects/VasHand`, write
+  `havevas=true`, call nothing. The flag then persists (observed for the whole window).
+- **drop:** deactivate the socket, re-assert `havevas=true`, call `CheckInventory()`. The
+  game spawns the clone and clears the flag itself.
+
+`Read`/`Poll` therefore now see real edges, and the peer's avatar shows and hides the item
+from the same `KindState` messages.
+
+**Evidence, 2026-10-24.** Two installs on one PC, `run-pair.ps1 -Seconds 120 -Port 47801`.
+
+*Host throws* (`-DropVis`, `tools/runs/dropvis-host2.txt`):
+
+- `04:14:32.129 COOP items: local vas -> have owner=host`; the guest logs
+  `04:14:32.152 COOP avatar: peer holds vas`.
+- Drop at `04:14:35.087`; `04:14:35.175 COOP items: local vas -> none`; the game's own
+  clone is in the scene (`dropvis vas after-drop: matches=5 new=1`).
+- `04:14:35.385 COOP items: placement out n=50 chunks=3 fp=20:BC769EB2`.
+- Guest `04:14:35.389 COOP items: place vas -> (12.32, 22.98, -7.04) active=y`, again
+  mid-fall at `04:14:35.590 (11.68, 22.35, -7.04)`, settled at
+  `04:14:50.875 (10.42, 20.36, -7.05)`. The peer's vase left the old place when the host
+  let go, and then followed it to the floor.
+
+*Guest throws* (`-ClientDropVis`, `tools/runs/dropvis-client.txt`):
+
+- Guest `04:17:17.789 COOP items: local vas -> have owner=guest`; host
+  `04:17:17.814 COOP avatar: peer holds vas` and
+  `04:17:17.816 COOP items: apply vas=have owner=guest`.
+- Guest drop `04:17:20.617`, `04:17:20.642 local vas -> none`; host
+  `04:17:20.649 COOP avatar: peer no longer holds vas`.
+- Guest `04:17:21.057 COOP items: dropped vas at (12.15, 25.87, -6.79) active=y`; host
+  `04:17:21.059 COOP items: place vas -> (12.15, 25.87, -6.79) active=y` — the same pose
+  to the centimetre, 2 ms apart. The guest's throw is visible to the host.
+
+**Spectator (same release).** `CatchSync` stopped following the peer whenever its `Player`
+root was briefly inactive: the state packet carries no transform then (`HasTarget` false),
+so the camera froze at the exact moment of a catch. It now keeps the last received pose
+and follows that until a live one returns (logged as `(last known)`), and `EnsureCam`
+tests `activeSelf` rather than `activeInHierarchy` (IL2CPP reports the latter false for
+these objects). Seen in the same runs: `spec=True cam='Camera' … (last known)` on the
+spectating end while `avVisible=False`.
+
+**What this does not prove.** One item (the vase), one scene, two processes on one PC. No
+human pickup, no second PC, no 3+ players. Only 20 of the 50 items resolve to a live scene
+object here (`world objects 20/50 scene=3782`); the other 30 take the `SpawnWorld`
+fallback and have not been checked visually. After a drop the old pose can stay visible
+for the 0.4 s `DropPlaceDelay` before the placement arrives.
+
+**Correction to §30.** The 2026-10-23 placement run measured and moved `new<Item>` roots,
+which are prefab templates, so its evidence does not stand: `ipos=50:D6465449` was a hash
+of 50 *prefab* poses (identical on both ends because the prefabs are identical), and the
+`-PlaceTest` nudge moved `tb1`'s prefab and was "restored" by the host's table writing the
+same prefab pose back. Neither showed that a visible item moved. The claim in v0.8.0's
+notes that placement was replicated was therefore not verified; the first evidence that a
+*visible* item moves is the vase run above (`20` live objects, same pose on both ends on
+drop). Everything else about §30 — the RNG argument, the wire format, the host-authority
+model — still holds.

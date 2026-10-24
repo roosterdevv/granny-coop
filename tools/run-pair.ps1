@@ -38,6 +38,8 @@ param(
     [switch]$ItemTest,
     [switch]$PlaceTest,
     [switch]$PauseTest,
+    [switch]$DropVis,
+    [switch]$ClientDropVis,
     [int]$ClientDelay = 12,
     [int]$KillClientAfter = -1,
     [int]$RelaunchClientAfter = -1,
@@ -98,6 +100,12 @@ $clientExtra = $extra
 if ($ClientDoorTest) { $clientExtra = $clientExtra + @("--coop-doortest") }
 # -PlaceTest moves one item on the guest only; the host must put it back.
 if ($PlaceTest) { $clientExtra = $clientExtra + @("--coop-placetest") }
+# -DropVis takes a vase through the game's own pickup/drop path on the host;
+# -ClientDropVis does it on the guest (the other sync direction). The probe
+# waits for the peer to connect before it starts. The drop runner lives in
+# WorldProbe, which only ticks when --coop-probe is on, so add it here.
+if ($DropVis) { $hostExtra = $hostExtra + @("--coop-dropvis", "--coop-probe") }
+if ($ClientDropVis) { $clientExtra = $clientExtra + @("--coop-dropvis", "--coop-probe") }
 
 $started = Get-Date
 

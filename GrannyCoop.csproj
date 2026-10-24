@@ -7,7 +7,7 @@
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <NoWarn>$(NoWarn);CS0436;MSB3277</NoWarn>
-    <Version>0.8.0</Version>
+    <Version>0.8.1</Version>
     <GrannyTest>$(GRANNY_TEST)</GrannyTest>
   </PropertyGroup>
 

@@ -3,7 +3,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.8.0", "coop-anything")]
+[assembly: MelonInfo(typeof(GrannyCoop.GrannyCoopMod), "Granny Co-op", "0.8.1", "coop-anything")]
 [assembly: MelonGame("DVloper", "Granny")]
 
 namespace GrannyCoop
@@ -92,9 +92,11 @@ namespace GrannyCoop
             _items.ItemTest = _cfg.ItemTest;
             _items.PlaceTest = _cfg.PlaceTest;
             _items.ItemProbe = _cfg.ItemProbe;
-            LoggerUtil.Log($"COOP initialised v0.8.0 role={_cfg.Role} name='{_cfg.PlayerName}' " +
+            _probe.DropVis = _cfg.DropVis;
+            LoggerUtil.Log($"COOP initialised v0.8.1 role={_cfg.Role} name='{_cfg.PlayerName}' " +
                            $"addr={_cfg.Address}:{_cfg.Port} autoplay={_cfg.AutoPlay} probe={_cfg.Probe} " +
                            $"doortest={_cfg.DoorTest} itemtest={_cfg.ItemTest} placetest={_cfg.PlaceTest} iprobe={_cfg.ItemProbe} " +
+                           $"dropvis={_cfg.DropVis} " +
                            $"spectate={_cfg.Spectate} catchtest={_cfg.CatchTest}");
 
             if (_cfg.Role == CoopRole.Off)
@@ -139,7 +141,14 @@ namespace GrannyCoop
 
             if (_cfg != null && _cfg.AutoPlay) AutoPlayTick();
             if (_cfg != null && _cfg.TestMove) TestMoveTick(UnityEngine.Time.unscaledDeltaTime);
-            if (_cfg != null && _cfg.Probe) _probe.Tick(FindRoot("Player"), UnityEngine.Time.unscaledDeltaTime);
+            if (_cfg != null && _cfg.Probe)
+            {
+                // The QA drop runs only once a peer is connected, so the
+                // placement it produces is actually observed by the other end.
+                _probe.NetConnected = _net != null && _net.Connected;
+                _probe.ItemsReady = _items.Ready;
+                _probe.Tick(FindRoot("Player"), UnityEngine.Time.unscaledDeltaTime);
+            }
             TickSceneFollow();
 
             // Status on wall-clock 10 s boundaries, not a per-process

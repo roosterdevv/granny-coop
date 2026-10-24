@@ -16,7 +16,7 @@ nobody has played the game through in co-op yet.
 | Game | Granny (2018), DVloper — Steam app **962400** |
 | Build tested | buildid **21006637** (v1.3.4), Unity **6000.0.58f2**, IL2CPP, metadata v31 |
 | Loader | MelonLoader **0.7.3** |
-| Mod version | **0.8.0** |
+| Mod version | **0.8.1** |
 | Players | 2 (host + one guest). The protocol has no hard limit, 3+ is untested |
 | Transport | UDP, direct IP or virtual LAN, port **47777** |
 | QA | `automated` — scripted two-instance runs against real game clients |
@@ -60,7 +60,10 @@ simulated on the host and pinned on the guest), and open/close the same doors
 **picking player's** client is the one that puts the item in its hand and takes it out of
 the world, so the other player sees it in the picker's hands (v0.7.0). **Item placement is
 host-authoritative** (v0.8.0): the host publishes where every item lies and each peer moves
-its own copy there, so two instances no longer show different layouts. Avatars are drawn
+its own copy there, so two instances no longer show different layouts. From v0.8.1 the
+peer moves the **live scene object** (and the fresh clone a drop creates), not the
+prefab template, so taking and throwing a vase is visible on the other machine in both
+directions. Avatars are drawn
 at the peer's real feet with a 1.85 m stand and a 0.95 m crouch. A host that opens the
 pause/settings menu no longer stops the world (v0.7.0): the menu opens, but `Time.timeScale`
 is put back to 1 so Granny keeps walking for both players. The van and the day cycle are
@@ -96,16 +99,20 @@ Verified in scripted runs on 2026-10-23 (details and log excerpts in
   run the guest picked up the hammer, the host adopted the write
   (`apply Hammare=have owner=guest`) and itself stayed empty-handed (`HammerHand(active=n)`),
   and the guest logged `peer holds Hammare` (`§27`, `§29`).
-- **Item placement** (v0.8.0) — each instance rolls its own random layout when the scene
-  starts, and the seed cannot be replayed from outside the game, so the **host's layout is
-  replicated instead**. The host sends a placement table (item hash, position, rotation,
-  active state) in 3 chunks at prepare, on every request and every 15 s; a guest asks on
-  join and re-asks until the first table arrives. A local drop sends that one item 0.4 s
-  later. Held items are skipped (the have-flag path owns them); the next table after a drop
-  puts them back. Both status lines carry a live placement fingerprint (`ipos=n:XXXXXXXX`)
-  built from item hashes, positions quantised to cm and active state. In the 2026-10-23 run
-  both ends agreed on `ipos` at every sample, and with the QA nudge (`-PlaceTest`) the guest
-  moved `tb1` by 2.5 m and the host's reply put it back 12 ms later (`§30`).
+- **Item placement** (v0.8.0, fixed in v0.8.1) — each instance rolls its own random layout
+  when the scene starts, and the seed cannot be replayed from outside the game, so the
+  **host's layout is replicated instead**. The host sends a placement table (item hash,
+  position, rotation, active state) in 3 chunks at prepare, on every request and every
+  15 s; a guest asks on join and re-asks until the first table arrives. A local drop sends
+  that one item 0.4 s later. Held items are skipped (the have-flag path owns them); the
+  next table after a drop puts them back. v0.8.0 read and wrote `InventoryController.new<Item>`,
+  which QA showed is the **uninstantiated prefab**, so the table only moved invisible
+  templates; v0.8.1 resolves the live scene object (clone first, then original, active
+  before inactive, nearest to the drop hint) and re-resolves after each drop. Both status
+  lines carry a live placement fingerprint (`ipos=n:XXXXXXXX`) over live objects, positions
+  quantised to cm and active state. In the 2026-10-24 runs the guest's vase followed the
+  host's throw to the floor and the host's vase moved to the guest's drop at the same
+  centimetre (`§31`).
 - **Avatars** — the peer's state carries its **feet** position, not the controller pivot,
   and a crouch flag. The capsule is built from the feet up: 1.85 m standing, 0.95 m
   crouched, lerped between the two over ~0.2 s. Before v0.7.0 it was a 1.5 m capsule
@@ -331,12 +338,15 @@ untouched install starts instead (`docs/NOTES.md §25`).
 | two clients, `--coop-itemtest` on the guest | 2026-10-23 | guest → host pickup (v0.6.0) | guest wrote `Hammare=have`, host applied it within 40 ms and mirrored the hand; host→guest direction re-confirmed in the same run |
 | two clients, `-ItemTest`, 150 s | 2026-10-23 | item ownership + avatar height (v0.7.0) | guest picked up `Hammare`; its own hand stayed empty (`HammerHand(active=n)`) while it drew `peer holds Hammare` in the host's hand; host applied `owner=guest`; avatars created at the feet, 1.85 m |
 | two clients, `-PauseTest`, 150 s | 2026-10-23 | pause policy (v0.7.0) | two simulated menu pauses; each restored on the next frame (`Time.timeScale 0 -> 1`, `timeScale=1.00 audioPaused=False`), Granny walked 3 m through the window and the guest's `gRemote` matched |
-| two clients, `-PlaceTest`, 100 s | 2026-10-23 | host placement table + forced divergence (v0.8.0) | host sent 50 items in 3 chunks; both ends `ipos=50:D6465449`; guest moved `tb1` from (5.64, -2.76, 1.61) to (8.14, -2.76, 4.11), the host's table put it back 12 ms later, and `ipos` matched again |
+| two clients, `-PlaceTest`, 100 s | 2026-10-23 | host placement table, forced divergence (v0.8.0) — **not valid evidence**: it moved the prefab | host sent 50 items in 3 chunks; both ends `ipos=50:D6465449`; the guest's `tb1` nudge was undone 12 ms later. QA later showed `new<Item>` is the prefab template, so nothing visible moved (`§31`) |
+| two clients, `-DropVis`, 120 s | 2026-10-24 | host throws the vase, guest sees it move (v0.8.1) | genuine hold (`VasHand` on, `havevas` true, no `CheckInventory`); drop through `CheckInventory` spawned `Vas(Clone)`; guest `place vas -> (12.32, 22.98, -7.04)` → settled `(10.42, 20.36, -7.05)` |
+| two clients, `-ClientDropVis`, 120 s | 2026-10-24 | guest throws the vase, host sees it move (v0.8.1) | host `apply vas=have owner=guest` on the hold; after the guest's drop the host applied `place vas -> (12.15, 25.87, -6.79)`, the same pose the guest logged 2 ms earlier |
 
 No run has covered: a real network, three players, a full playthrough, a human pickup, or
-re-entry after a catch. Placement has not been run across two PCs with genuinely different
-saves: the paired installs on one PC roll the same layout, so the correction path was
-exercised with a forced divergence (`-PlaceTest`) instead.
+re-entry after a catch. Placement has been proven for one item (the vase) in one scene on
+one PC, both directions, in v0.8.1; the other 49 items and a second PC are still untested,
+and 30 of the 50 items have no live scene object in that scene (they take the spawn
+fallback).
 
 ## Notes and prior art
 

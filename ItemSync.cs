@@ -68,6 +68,17 @@ namespace GrannyCoop
             public Quaternion Rot;
             public bool Active;
             public bool HavePos;
+            /// <summary>The live world object on this end: the scene's own
+            /// UsefulObjects/&lt;Name&gt; at start, or the &lt;Name&gt;(Clone) the game
+            /// spawns when somebody drops it. InventoryController.newX is a
+            /// prefab template, not an instance (QA dropvis 2026-10-24: newvas
+            /// never appears in a scene scan and never moves), so it is only
+            /// used as a source for Instantiate when this end has no copy.</summary>
+            public Transform World;
+            /// <summary>Where the local player stood when it dropped this item;
+            /// used to pick the fresh &lt;Name&gt;(Clone) out of the scene.</summary>
+            public Vector3 DropHint;
+            public bool HasDropHint;
             /// <summary>Set when this end dropped the item; the world object is
             /// sent once the game has had a moment to put it back (v0.8.0).</summary>
             public float PlaceAt;
@@ -78,6 +89,14 @@ namespace GrannyCoop
         public RemoteAvatar Avatar { get; set; }
 
         private readonly List<Entry> _items = new List<Entry>();
+        /// <summary>Every scene Transform by name, rebuilt on demand. Item
+        /// objects are looked up here instead of through the inventory's newX
+        /// field, which points at an uninstantiated prefab.</summary>
+        private readonly Dictionary<string, List<Transform>> _byName =
+            new Dictionary<string, List<Transform>>(StringComparer.OrdinalIgnoreCase);
+        private int _scanCount;
+        private int _scanFrame = -1;
+        private Vector3 _playerPos;
         private MonoBehaviour _inv;
         private bool _prepared;
         private float _prepAccum;
@@ -95,6 +114,15 @@ namespace GrannyCoop
         public int Recv { get; private set; }
         public int Applied { get; private set; }
         public int Placed { get; private set; }
+
+        /// <summary>True once this end has an inventory and the item table is
+        /// mapped. QA runs gate their first write on this: a pickup replayed
+        /// before the mapping exists is invisible to the sync, so the test
+        /// would "pass" against nothing.</summary>
+        public bool Ready
+        {
+            get { return _prepared && _inv != null && _items.Count > 0; }
+        }
 
         /// <summary>QA only (--coop-itemtest): the host flips one have-flag on
         /// and off through the same property the game uses, so the observe ->
@@ -139,6 +167,8 @@ namespace GrannyCoop
             _gotPlacement = false;
             _placePending = false;
             _nudged = false;
+            _byName.Clear();
+            _scanFrame = -1;
             Sent = Recv = Applied = Placed = 0;
             _testClock = -1f;
             _testItem = null;
@@ -150,6 +180,7 @@ namespace GrannyCoop
             if (player == null) return;
 
             _clock += dt;
+            try { _playerPos = player.transform.position; } catch (Exception) { }
 
             if (!_prepared)
             {
@@ -334,6 +365,8 @@ namespace GrannyCoop
                            " objOk=" + objOk + " trOk=" + trOk + " dupes=" + dupes +
                            " trueAtStart=" + trueNow + ":" + trues);
 
+            ResolveWorlds();
+
             // The two ends roll their own item layout from their own RNG, so
             // this line is the QA evidence of divergence: it is printed before
             // the first placement table is applied.
@@ -407,7 +440,12 @@ namespace GrannyCoop
                 e.Owner = v ? SideOf(role) : OwnerNone;
                 if (send(BuildStateBody(e.Hash, v, e.Owner))) Sent++;
                 // A drop lands somewhere; say where once the game has moved it.
-                if (!v) e.PlaceAt = _clock + DropPlaceDelay;
+                if (!v)
+                {
+                    e.PlaceAt = _clock + DropPlaceDelay;
+                    e.DropHint = _playerPos;
+                    e.HasDropHint = true;
+                }
                 LoggerUtil.Log("COOP items: local " + e.Name + " -> " +
                                (v ? "have" : "none") + " owner=" + OwnerName(e.Owner));
             }
@@ -459,8 +497,130 @@ namespace GrannyCoop
 
         private Transform WorldOf(Entry e)
         {
-            try { return e.Tr != null ? e.Tr.GetValue(_inv) as Transform : null; }
-            catch { return null; }
+            return e.World;
+        }
+
+        // ---- world object discovery (v0.8.1) --------------------------------
+        //
+        // InventoryController.newX is not the item in the world; QA dropvis
+        // proved newvas is the root of the uninstantiated prefab (it never
+        // shows up in a scene scan and never moves), while the visible vase is
+        // UsefulObjects/Vas and a dropped one is a fresh Vas(Clone) at
+        // HandHoldObjects/DropPoint. So the world object is looked up by name
+        // in the scene, and after a drop the new clone replaces the old one.
+
+        /// <summary>Index every scene Transform by name. Inactive objects are
+        /// included: items inside closed containers are inactive.</summary>
+        private void ScanScene()
+        {
+            int frame;
+            try { frame = Time.frameCount; } catch (Exception) { frame = -1; }
+            if (frame >= 0 && frame == _scanFrame) return;
+            _scanFrame = frame;
+            _byName.Clear();
+            _scanCount = 0;
+            try
+            {
+                var all = UnityEngine.Object.FindObjectsByType<Transform>(
+                    FindObjectsInactive.Include, FindObjectsSortMode.None);
+                _scanCount = all.Length;
+                for (int i = 0; i < all.Length; i++)
+                {
+                    var t = all[i];
+                    if (t == null) continue;
+                    string n;
+                    try { n = t.name; } catch (Exception) { continue; }
+                    if (string.IsNullOrEmpty(n)) continue;
+                    List<Transform> list;
+                    if (!_byName.TryGetValue(n, out list))
+                    {
+                        list = new List<Transform>();
+                        _byName[n] = list;
+                    }
+                    list.Add(t);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggerUtil.Log("COOP items: scene scan FAILED: " + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+
+        private static bool IsSceneItem(Transform t)
+        {
+            try
+            {
+                if (t.name.StartsWith("GrannyCoop", StringComparison.Ordinal)) return false;
+                var p = t.parent;
+                int guard = 0;
+                while (p != null && guard++ < 12)
+                {
+                    var pn = p.name;
+                    if (pn == "HandHoldObjects" ||
+                        pn.StartsWith("GrannyCoop", StringComparison.Ordinal)) return false;
+                    p = p.parent;
+                }
+                return true;
+            }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>The best live copy of an item: an active one beats an
+        /// inactive one, and with a hint the nearest one wins. An original
+        /// wins a tie against a clone.</summary>
+        private Transform FindWorld(Entry e, Vector3? near)
+        {
+            Transform best = null;
+            float bestScore = float.MaxValue;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                string key = pass == 0 ? e.Name + "(Clone)" : e.Name;
+                List<Transform> list;
+                if (!_byName.TryGetValue(key, out list)) continue;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var t = list[i];
+                    if (t == null || !IsSceneItem(t)) continue;
+                    float score = 0f;
+                    try
+                    {
+                        if (!t.gameObject.activeSelf) score += 1000f;
+                        if (near.HasValue) score += (t.position - near.Value).sqrMagnitude;
+                    }
+                    catch (Exception) { continue; }
+                    if (pass == 0) score += 0.01f;
+                    if (score < bestScore) { bestScore = score; best = t; }
+                }
+            }
+            return best;
+        }
+
+        /// <summary>Adopt the scene's own item objects once the inventory is
+        /// mapped, so the first placement table has something visible to
+        /// move.</summary>
+        private void ResolveWorlds()
+        {
+            ScanScene();
+            int ok = 0;
+            for (int i = 0; i < _items.Count; i++)
+            {
+                var e = _items[i];
+                e.World = FindWorld(e, null);
+                if (e.World != null) ok++;
+            }
+            LoggerUtil.Log("COOP items: world objects " + ok + "/" + _items.Count +
+                           " scene=" + _scanCount);
+        }
+
+        /// <summary>Re-scan and adopt the current instance of an item. Called
+        /// after a local drop, when the game has just spawned a new clone, and
+        /// when the tracked object has gone away.</summary>
+        private Transform RefreshWorld(Entry e, Vector3? near)
+        {
+            ScanScene();
+            var t = FindWorld(e, near);
+            if (t != null) e.World = t;
+            return e.World;
         }
 
         // ---- placement (v0.8.0) ---------------------------------------------
@@ -478,9 +638,16 @@ namespace GrannyCoop
         /// to share — and the drop path sends where it lands.</summary>
         private void Capture(Entry e)
         {
-            var world = WorldOf(e);
-            if (world == null) return;
             if (Read(e)) return;
+            var world = WorldOf(e);
+            if (world == null || !world.gameObject.activeSelf)
+            {
+                // The object we tracked is gone (the game destroys the world
+                // copy on a pickup) or has been replaced by the fresh clone the
+                // drop spawned. Adopt the current one before reading its pose.
+                world = RefreshWorld(e, e.HasDropHint ? (Vector3?)e.DropHint : null);
+            }
+            if (world == null) return;
             try
             {
                 var q = world.rotation;
@@ -510,9 +677,14 @@ namespace GrannyCoop
             e.Active = active;
             e.HavePos = true;
 
-            var world = WorldOf(e);
-            if (world == null) return;
             if (Read(e)) return;
+
+            var world = WorldOf(e);
+            if (world == null)
+            {
+                world = SpawnWorld(e, pos, rot, active);
+                if (world == null) return;
+            }
 
             bool moved;
             try
@@ -536,6 +708,30 @@ namespace GrannyCoop
             {
                 LoggerUtil.Log("COOP items: place " + e.Name + " -> " + Fmt(pos) +
                                " active=" + (active ? "y" : "n"));
+            }
+        }
+
+        /// <summary>Last resort for an item this end never had in its scene:
+        /// instantiate the game's own template at the reported pose.</summary>
+        private Transform SpawnWorld(Entry e, Vector3 pos, Quaternion rot, bool active)
+        {
+            try
+            {
+                var prefab = e.Tr != null ? e.Tr.GetValue(_inv) as Transform : null;
+                if (prefab == null) return null;
+                var go = UnityEngine.Object.Instantiate(prefab.gameObject, pos, rot);
+                go.name = e.Name;
+                go.SetActive(active);
+                e.World = go.transform;
+                LoggerUtil.Log("COOP items: spawned " + e.Name + " at " + Fmt(pos) +
+                               " active=" + (active ? "y" : "n"));
+                return e.World;
+            }
+            catch (Exception ex)
+            {
+                LoggerUtil.Log("COOP items: spawn FAILED on " + e.Name + ": " +
+                               ex.GetType().Name + ": " + ex.Message);
+                return null;
             }
         }
 
@@ -642,6 +838,9 @@ namespace GrannyCoop
         /// peer does not have to wait for the next full table.</summary>
         private bool SendOnePlacement(Entry e, Func<byte[], bool> send)
         {
+            // The game put the item back as a fresh clone near the drop point;
+            // the object tracked before the pickup is not that clone.
+            RefreshWorld(e, e.HasDropHint ? (Vector3?)e.DropHint : null);
             Capture(e);
             if (!e.HavePos) return false;
             using (var ms = new System.IO.MemoryStream(35))
@@ -745,7 +944,11 @@ namespace GrannyCoop
         private void ApplyVisual(Entry e, bool held)
         {
             var hand = e.Obj != null ? e.Obj.GetValue(_inv) as GameObject : null;
-            var world = e.Tr != null ? e.Tr.GetValue(_inv) as Transform : null;
+            // The live scene object, not the inventory's newX prefab. The
+            // prefab is only a source when this end has no world copy at all.
+            var world = WorldOf(e);
+            var prefab = e.Tr != null ? e.Tr.GetValue(_inv) as Transform : null;
+            var source = world != null ? world : prefab;
 
             if (held)
             {
@@ -757,9 +960,9 @@ namespace GrannyCoop
 
                 try
                 {
-                    if (hand != null && hand.transform.childCount == 0 && world != null)
+                    if (hand != null && hand.transform.childCount == 0 && source != null)
                     {
-                        e.Spawned = UnityEngine.Object.Instantiate(world.gameObject, hand.transform);
+                        e.Spawned = UnityEngine.Object.Instantiate(source.gameObject, hand.transform);
                         e.Spawned.name = "Coop" + e.Name;
                         e.Spawned.SetActive(true);
                         e.Spawned.transform.localPosition = Vector3.zero;

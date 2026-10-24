@@ -19,6 +19,7 @@ namespace GrannyCoop
         public bool AutoPlay;
         public bool TestMove;
         public bool Probe;
+        public bool DropVis;   // QA: take a vase through the game's own pickup/drop path
         public bool DoorTest;
         public bool ItemTest;
         public bool PlaceTest;  // QA: move one item on the guest, wait for the host to undo it
@@ -67,6 +68,7 @@ namespace GrannyCoop
                 else if (a == "coop-autoplay") cfg.AutoPlay = true;
                 else if (a == "coop-testmove") cfg.TestMove = true;
                 else if (a == "coop-probe") cfg.Probe = true;
+                else if (a == "coop-dropvis") cfg.DropVis = true;
                 else if (a == "coop-doortest") cfg.DoorTest = true;
                 else if (a == "coop-itemtest") cfg.ItemTest = true;
                 else if (a == "coop-placetest") cfg.PlaceTest = true;
