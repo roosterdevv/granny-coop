@@ -2717,3 +2717,28 @@ notes that placement was replicated was therefore not verified; the first eviden
 *visible* item moves is the vase run above (`20` live objects, same pose on both ends on
 drop). Everything else about §30 — the RNG argument, the wire format, the host-authority
 model — still holds.
+
+## 32. v0.8.1 as shipped: both directions in one run (2026-10-24)
+
+The evidence above came from builds made before the version bump, and each direction ran
+separately. The shipped `bin/Release` DLL (SHA-256 `432bb7f6…7925fc`) was then run once
+for 130 s with both ends on `--coop-dropvis` (`tools/runs/dropvis-081-both.txt`):
+
+- host take `04:37:29.293` (`UsefulObjects/Vas` at `(7.90, 22.40, -9.93)`) → guest
+  `iApplied=1` at `04:37:30.003`, `place vas -> (12.71, 26.40, -7.04)` at `04:37:32.390`;
+  host drop at `04:37:32.266`;
+- guest take `04:38:00.506` → host `peer holds vas` at `04:38:00.656`; guest drop
+  `04:38:03.489` → host `peer no longer holds vas` at `04:38:03.687` and
+  `place vas -> (11.38, 21.91, -7.04) active=y` at `04:38:04.099`;
+- spectator: host caught `04:37:55.513`, camera `PlayerEyes`, `(last known)` samples
+  continue after `04:38:02.733 player active -> False`;
+- no `ERROR`, `Exception` or `CRITICAL` line.
+
+The installer was rebuilt around that DLL. Installed over `granny-test3` with
+`--role off --silent`: exit 0, DLL byte-identical to the build, one launch logged
+`COOP initialised v0.8.1 role=Off`.
+
+**Process note.** One launch during test setup was started from the real Steam install
+instead of a copy, with Steam closed. It was stopped immediately; no mod files were
+installed there, no MelonPreferences config was added, and no save was found. Every
+measurement in this file comes from the copies under `C:\Users\Public\granny-test*`.
